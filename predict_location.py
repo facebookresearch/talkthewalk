@@ -7,7 +7,6 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 
-from torch.autograd import Variable
 from data_loader import Landmarks, FasttextFeatures, ResnetFeatures, GoldstandardFeatures, \
                         load_data, load_features, create_obs_dict, create_batch
 from models import MapEmbedding
@@ -15,13 +14,16 @@ from utils import create_logger
 
 class LocationPredictor(nn.Module):
 
-    def __init__(self, resnet_features, fasttext_features,
+    def __init__(self, goldstandard_features, resnet_features, fasttext_features,
                  emb_sz, num_embeddings):
         super(LocationPredictor, self).__init__()
+        self.goldstandard_features = goldstandard_features
         self.resnet_features = resnet_features
         self.fasttext_features = fasttext_features
         self.num_embeddings = num_embeddings
         self.emb_sz = emb_sz
+        if self.goldstandard_features:
+            self.goldstandard_emb = nn.Embedding(12, emb_sz)
         if self.fasttext_features:
             self.fasttext_emb_linear = nn.Linear(300, emb_sz)
         if self.resnet_features:
@@ -31,12 +33,14 @@ class LocationPredictor(nn.Module):
 
     def forward(self, X, landmarks, y):
         batch_size = y.size(0)
+        if self.goldstandard_features:
+            goldstandard_emb = self.goldstandard_emb.forward(X['goldstandard']).sum(dim=1)
+
         if self.resnet_features:
             resnet_emb = self.resnet_emb_linear.forward(X['resnet'])
             resnet_emb = resnet_emb.sum(dim=1)
 
         if self.fasttext_features:
-
             fasttext_emb = self.fasttext_emb_linear.forward(X['fasttext'])
             fasttext_emb = fasttext_emb.sum(dim=1)
 
@@ -44,7 +48,9 @@ class LocationPredictor(nn.Module):
             emb = resnet_emb + fasttext_emb
         elif self.resnet_features:
             emb = resnet_emb
-        else:
+        elif self.goldstandard_features:
+            emb = goldstandard_emb
+        elif self.fasttext_features:
             emb = fasttext_emb
 
         # print(input_emb)
@@ -65,8 +71,10 @@ class LocationPredictor(nn.Module):
 
     def save(self, path):
         state = dict()
-        state['feat_sz'] = self.feat_sz
-        state['embed_sz'] = self.embed_sz
+        state['goldstandard_features'] = self.goldstandard_features
+        state['resnet_features'] = self.resnet_features
+        state['fasttext_features'] = self.fasttext_features
+        state['emb_sz'] = self.emb_sz
         state['num_embeddings'] = self.num_embeddings
         state['parameters'] = self.state_dict()
         torch.save(state, path)
@@ -74,7 +82,8 @@ class LocationPredictor(nn.Module):
     @classmethod
     def load(cls, path):
         state = torch.load(path)
-        model = cls(state['feat_sz'], state['embed_sz'], state['num_embeddings'])
+        model = cls(state['goldstandard_features'], state['resnet_features'], state['fasttext_features'],
+                    state['emb_sz'], state['num_embeddings'])
         model.load_state_dict(state['parameters'])
         return model
 
@@ -84,7 +93,8 @@ if __name__ == '__main__':
     parser.add_argument('--cuda', action='store_true')
     parser.add_argument('--resnet-features', action='store_true')
     parser.add_argument('--fasttext-features', action='store_true')
-    parser.add_argument('--big-softmax', action='store_true')
+    parser.add_argument('--goldstandard-features', action='store_true')
+    parser.add_argument('--softmax', choices=['landmarks', 'location'], default='location')
     parser.add_argument('--emb-sz', type=int, default=512)
     parser.add_argument('--num-epochs', type=int, default=500)
     parser.add_argument('--batch_sz', type=int, default=64)
@@ -93,6 +103,14 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     print(args)
+
+    exp_dir = os.path.join(os.environ['TALKTHEWALK_EXPDIR'], args.exp_name)
+    if os.path.exists(exp_dir):
+        raise RuntimeError('Experiment directory already exist..')
+    os.mkdir(exp_dir)
+
+    logger = create_logger(os.path.join(exp_dir, 'log.txt'))
+    logger.info(args)
 
     data_dir = os.environ.get('TALKTHEWALK_DATADIR', './data')
 
@@ -112,14 +130,19 @@ if __name__ == '__main__':
         feature_loaders['fasttext'] = FasttextFeatures(textfeatures, '/private/home/harm/data/wiki.en.bin')
     if args.resnet_features:
         feature_loaders['resnet'] = ResnetFeatures(os.path.join(data_dir, 'resnetfeat.json'))
+    if args.goldstandard_features:
+        feature_loaders['goldstandard'] = GoldstandardFeatures(landmark_map)
     assert (len(feature_loaders) > 0)
 
-    X_train, landmark_train, y_train = load_data(train_configs, feature_loaders, landmark_map)
-    X_valid, landmark_valid, y_valid = load_data(valid_configs, feature_loaders, landmark_map)
-    X_test, landmark_test, y_test = load_data(test_configs, feature_loaders, landmark_map)
+    X_train, landmark_train, y_train = load_data(train_configs, feature_loaders, landmark_map, softmax=args.softmax)
+    X_valid, landmark_valid, y_valid = load_data(valid_configs, feature_loaders, landmark_map, softmax=args.softmax)
+    X_test, landmark_test, y_test = load_data(test_configs, feature_loaders, landmark_map, softmax=args.softmax)
 
+    num_embeddings = len(landmark_map.idx_to_global_coord)
+    if args.softmax == 'landmarks':
+        num_embeddings = len(landmark_map.itos) + 1
 
-    net = LocationPredictor(args.resnet_features, args.fasttext_features, args.emb_sz, len(landmark_map.idx_to_global_coord))
+    net = LocationPredictor(args.goldstandard_features, args.resnet_features, args.fasttext_features, args.emb_sz, num_embeddings)
     params = [v for k, v in net.named_parameters()]
     print(len(params))
     opt = optim.Adam(params, lr=1e-4)
@@ -137,6 +160,9 @@ if __name__ == '__main__':
     if args.cuda:
         net.cuda()
 
+    best_train_loss, best_valid_loss, best_test_loss = None, 1e16, None
+    best_train_acc, best_valid_acc, best_test_acc = None, None, None
+
     for i in range(args.num_epochs):
         train_loss, train_acc = net.forward(X_train, landmark_train, y_train)
 
@@ -147,10 +173,20 @@ if __name__ == '__main__':
         valid_loss, valid_acc = net.forward(X_valid, landmark_valid, y_valid)
         test_loss, test_acc = net.forward(X_test, landmark_test, y_test)
 
-        print("Train loss: {} | Valid loss: {} | Test loss: {}".format(train_loss.cpu().data.numpy()[0],
+        logger.info("Train loss: {} | Valid loss: {} | Test loss: {}".format(train_loss.cpu().data.numpy()[0],
                                                                        valid_loss.cpu().data.numpy()[0],
                                                                        test_loss.cpu().data.numpy()[0]))
-        print("Train acc: {} | Valid acc: {} | Test acc: {}".format(train_acc,
+        logger.info("Train acc: {} | Valid acc: {} | Test acc: {}".format(train_acc,
                                                                     valid_acc,
                                                                     test_acc))
 
+        if valid_loss.cpu().data.numpy()[0] < best_valid_loss:
+            best_train_loss = train_loss.cpu().data.numpy()[0]
+            best_valid_loss = valid_loss.cpu().data.numpy()[0]
+            best_train_loss = test_loss.cpu().data.numpy()[0]
+
+            best_train_acc, best_valid_acc, best_test_acc = train_acc, valid_acc, test_acc
+
+            net.save(os.path.join(exp_dir, 'model.pt'))
+
+    logger.info("{}, {}. {}".format(best_train_acc, best_valid_acc, best_test_acc))

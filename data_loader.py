@@ -214,7 +214,7 @@ class ResnetFeatures:
         return obs
 
 
-def load_data(configurations, feature_loaders, landmark_map):
+def load_data(configurations, feature_loaders, landmark_map, softmax='location'):
     X_data, landmark_data, y_data = {k: list() for k in feature_loaders.keys()}, list(), list()
 
     for config in configurations:
@@ -227,7 +227,10 @@ def load_data(configurations, feature_loaders, landmark_map):
         if landmark_map.has_landmarks(neighborhood, x, y):
             for k in feature_loaders.keys():
                 X_data[k].append(obs[k])
-            landmarks, label_index = landmark_map.get_softmax_idx(neighborhood, min_x, min_y, x, y)
+            if softmax == 'location':
+                landmarks, label_index = landmark_map.get_softmax_idx(neighborhood, min_x, min_y, x, y)
+            else:
+                landmarks, label_index = landmark_map.get_landmarks(neighborhood, min_x, min_y, x, y)
             landmark_data.append(landmarks)
             y_data.append(label_index)
 
@@ -250,7 +253,13 @@ def create_batch(X, landmarks, y, cuda=False):
         batch['textrecog'] = torch.LongTensor(bsz, max_len).zero_()
         for ii in range(bsz):
             for jj in range(len(X['textrecog'][ii])):
-                batch[ii][jj] = X['textrecog'][ii][jj]
+                batch['textrecog'][ii, jj] = X['textrecog'][ii][jj]
+    if 'goldstandard' in X:
+        max_len = max(len(s) for s in X['goldstandard'])
+        batch['goldstandard'] = torch.LongTensor(bsz, max_len).zero_()
+        for ii in range(bsz):
+            for jj in range(len(X['goldstandard'][ii])):
+                batch['goldstandard'][ii, jj] = X['goldstandard'][ii][jj]
 
 
     landmark_lens = [len(l) for l in landmarks]
