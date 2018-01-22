@@ -4,9 +4,11 @@ import torch.nn.functional as F
 
 class MapEmbedding(nn.Module):
 
-    def __init__(self, num_tokens, emb_size):
+    def __init__(self, num_tokens, emb_size, init_std=1):
         super(MapEmbedding, self).__init__()
         self.emb_landmark = nn.Embedding(num_tokens, emb_size, padding_idx=0)
+        if init_std != 1.0:
+            self.emb_landmark.weight.data.normal_(0.0, init_std)
         self.emb_size = emb_size
 
     def forward(self, x):

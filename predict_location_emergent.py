@@ -1,42 +1,21 @@
 from __future__ import division
 
-import logging
 import os
 import json
-import random
 import argparse
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
 
 from torch.autograd import Variable
-from sklearn.model_selection import train_test_split
 from sklearn.utils import shuffle
-from logging.handlers import RotatingFileHandler
 from matplotlib import pyplot as plt
 plt.switch_backend('agg')
 
 from data_loader import Landmarks, create_batch, load_data, load_features, create_obs_dict, TextrecogFeatures, GoldstandardFeatures
 from models import Tourist, Guide
-
-def create_logger(save_path):
-    logger = logging.getLogger()
-    # Debug = write everything
-    logger.setLevel(logging.DEBUG)
-
-    formatter = logging.Formatter('%(asctime)s :: %(levelname)s :: %(message)s')
-    file_handler = RotatingFileHandler(save_path, 'a', 1000000, 1)
-    file_handler.setLevel(logging.INFO)
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
-
-    steam_handler = logging.StreamHandler()
-    steam_handler.setLevel(logging.INFO)
-    logger.addHandler(steam_handler)
-
-    return logger
+from utils import create_logger
 
 def eval_epoch(X, landmarks, y, tourist, guide, batch_sz):
     tourist.eval()
@@ -188,7 +167,7 @@ if __name__ == '__main__':
 
         if epoch % report_every == 0:
             train_acc.append(g_acc)
-            print('Guide Accuracy: {:.4f} | Guide loss: {:.4f} | Tourist loss: {:.4f} | Reward: {:.4f} | V: {:.4f}'.format( \
+            logger.info('Guide Accuracy: {:.4f} | Guide loss: {:.4f} | Tourist loss: {:.4f} | Reward: {:.4f} | V: {:.4f}'.format( \
                     g_acc, np.mean(g_losses), np.mean(t_rl_losses), np.mean(rewards.cpu().data.numpy()), np.mean(t_val_losses)))
 
             val_accuracy = eval_epoch(X_valid, landmark_valid, y_valid, tourist, guide, args.batch_sz)
@@ -197,7 +176,7 @@ if __name__ == '__main__':
             val_acc.append(val_accuracy)
             test_acc.append(test_accuracy)
 
-            print('Valid Accuracy: {:.2f}% | Test Accuracy: {:.2f}%'.format(val_accuracy*100, test_accuracy*100))
+            logger.info('Valid Accuracy: {:.2f}% | Test Accuracy: {:.2f}%'.format(val_accuracy*100, test_accuracy*100))
 
             if val_accuracy > best_val_acc:
                 tourist.save(os.path.join(exp_dir, 'tourist.pt'))

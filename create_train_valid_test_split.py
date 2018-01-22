@@ -34,7 +34,7 @@ def get_configurations(neighborhoods):
 train_configurations, valid_configurations = list(), list()
 configs = get_configurations(train_neighborhoods)
 for config in configs:
-    if random.random() > 0.75:
+    if random.random() > 0.25:
         train_configurations.extend(config)
     else:
         valid_configurations.extend(config)
@@ -42,6 +42,8 @@ for config in configs:
 test_configurations = list()
 for c in get_configurations(test_neighborhoods):
     test_configurations.extend(c)
+
+print(len(train_configurations), len(valid_configurations), len(test_configurations))
 
 with open('configurations.train.json', 'w') as f:
     json.dump(train_configurations, f)

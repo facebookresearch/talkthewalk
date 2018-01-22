@@ -11,6 +11,9 @@ class Landmarks(object):
         super(Landmarks, self).__init__()
         self.coord_to_idx, self.idx_to_coord, self.landmarks, self.types = {}, {}, {}, set([])
 
+        self.global_coord_to_idx = dict()
+        self.idx_to_global_coord = list()
+
         self.boundaries = dict()
         self.boundaries['hellskitchen'] = [3, 3]
         self.boundaries['williamsburg'] = [2, 8]
@@ -40,6 +43,8 @@ class Landmarks(object):
                 self.types.add("Empty")
                 for i in range(self.boundaries[neighborhood][0]*2 + 4):
                     for j in range(self.boundaries[neighborhood][1] * 2 + 4):
+                        self.global_coord_to_idx[(neighborhood, i, j)]= len(self.idx_to_global_coord)
+                        self.idx_to_global_coord.append((neighborhood, i, j))
                         coord = (i, j)
                         if coord not in self.landmarks[neighborhood]:
                             self.landmarks[neighborhood][coord] = ["Empty"]
@@ -74,6 +79,27 @@ class Landmarks(object):
 
         return landmarks, label_index
 
+    def get_softmax_idx(self, neighborhood, min_x, min_y, x, y):
+        assert (x, y) in self.coord_to_idx[neighborhood], "x, y coordinates do not have landmarks"
+        landmarks = list()
+        label_index = None
+        k = 0
+        for coord in self.idx_to_coord[neighborhood]:
+            if x == coord[0] and y == coord[1]:
+                label_index = k
+                landmarks.append([self.global_coord_to_idx[(neighborhood, coord[0], coord[1])]])
+                k += 1
+            else:
+                if min_x <= coord[0] < min_x + 4 and min_y <= coord[1] < min_y + 4:
+                    # if all([t not in self.landmarks[neighborhood][(x, y)] for t in self.landmarks[neighborhood][coord]]):
+                    if True:
+                        landmarks.append([self.global_coord_to_idx[(neighborhood, coord[0], coord[1])]])
+                        k += 1
+
+        assert label_index is not None
+        assert len(landmarks) == 16, "{}_{}_{}".format(x, y, neighborhood)
+
+        return landmarks, label_index
 
 # get right orientation st you're facing landmarks
 def get_orientation_keys(x, y, cross_the_street=False):
@@ -165,11 +191,16 @@ class TextrecogFeatures:
 
 class FasttextFeatures:
 
-    def __init__(self, file):
+    def __init__(self, textfeatures, fasttext_file):
         import fastText
+        self.textfeatures = textfeatures
+        self.f = fastText.load_model(fasttext_file)
 
     def get(self, neighborhood, x, y):
-        pass
+        obs = list()
+        for key in get_orientation_keys(x, y):
+            obs.extend([self.f.get_word_vector(o['lex_recog']) for o in self.textfeatures[neighborhood][key]])
+        return obs
 
 
 class ResnetFeatures:
@@ -177,48 +208,78 @@ class ResnetFeatures:
         self.resnetfeatures = json.load(open(file))
 
     def get(self, neighborhood, x, y):
-        pass
+        obs = list()
+        for key in get_orientation_keys(x, y):
+            obs.append(self.resnetfeatures[neighborhood][key])
+        return obs
 
-def load_data(configurations, feature_loader, landmark_map):
-    X_data, landmark_data, y_data = list(), list(), list()
+
+def load_data(configurations, feature_loaders, landmark_map):
+    X_data, landmark_data, y_data = {k: list() for k in feature_loaders.keys()}, list(), list()
 
     for config in configurations:
         neighborhood = config['neighborhood']
         x, y = config['target_location'][:2]
         min_x, min_y = config['boundaries'][:2]
 
-        obs = feature_loader.get(neighborhood, x, y)
+        obs = {k: feature_loader.get(neighborhood, x, y) for k, feature_loader in feature_loaders.items()}
 
         if landmark_map.has_landmarks(neighborhood, x, y):
-            X_data.append(obs)
-            landmarks, label_index = landmark_map.get_landmarks(neighborhood, min_x, min_y, x, y)
+            for k in feature_loaders.keys():
+                X_data[k].append(obs[k])
+            landmarks, label_index = landmark_map.get_softmax_idx(neighborhood, min_x, min_y, x, y)
             landmark_data.append(landmarks)
             y_data.append(label_index)
 
     return X_data, landmark_data, y_data
 
 
-def create_batch(b, landmarks, t, cuda=False):
-    max_len, bsz = max(len(s) for s in b), len(b)
-    batch = torch.LongTensor(max_len, bsz).zero_()
-    for ii in range(bsz):
-        for jj in range(len(b[ii])):
-            batch[jj][ii] = b[ii][jj]
+def create_batch(X, landmarks, y, cuda=False):
+    bsz = len(y)
+    batch = dict()
+    if 'resnet' in X:
+        batch['resnet'] = torch.FloatTensor(X['resnet'])
+    if 'fasttext' in X:
+        max_len = max(len(s) for s in X['fasttext'])
+        batch['fasttext'] = torch.FloatTensor(bsz, max_len, 300).zero_()
+        for ii in range(bsz):
+            for jj in range(len(X['fasttext'][ii])):
+                batch['fasttext'][ii, jj, :] = torch.from_numpy(X['fasttext'][ii][jj])
+    if 'textrecog' in X:
+        max_len = max(len(s) for s in X['textrecog'])
+        batch['textrecog'] = torch.LongTensor(bsz, max_len).zero_()
+        for ii in range(bsz):
+            for jj in range(len(X['textrecog'][ii])):
+                batch[ii][jj] = X['textrecog'][ii][jj]
+
 
     landmark_lens = [len(l) for l in landmarks]
     max_landmarks = max(landmark_lens)
     max_landmarks_per_coord = max([max([len(x) for x in l]) for l in landmarks])
 
-    l_batch = torch.LongTensor(bsz, max_landmarks, max_landmarks_per_coord).zero_()
+    landmark_batch = torch.LongTensor(bsz, max_landmarks, max_landmarks_per_coord).zero_()
     mask = torch.FloatTensor(bsz, max_landmarks).fill_(0.0)
 
     for i, ls in enumerate(landmarks):
         for j, l in enumerate(ls):
-            l_batch[i, j, :len(l)] = torch.LongTensor(l)
+            landmark_batch[i, j, :len(l)] = torch.LongTensor(l)
         mask[i, :len(ls)] = 1.0
 
-    batch, l_batch, mask, t = Variable(batch), Variable(l_batch), Variable(mask), Variable(torch.LongTensor(t)).unsqueeze(-1)
-    if cuda:
-        batch, l_batch, mask, t = batch.cuda(), l_batch.cuda(), mask.cuda(), t.cuda()
+    return to_variable((batch, landmark_batch, mask, torch.LongTensor(y).unsqueeze(-1)), cuda=cuda)
 
-    return batch, l_batch, mask, t
+
+# TODO function to create torch tensor from list of lists
+def pad(tensor, type=torch.FloatTensor):
+    raise NotImplementedError()
+
+
+def to_variable(obj, cuda=True):
+    if torch.is_tensor(obj):
+        var = Variable(obj)
+        if cuda:
+            var = var.cuda()
+        return var
+    if isinstance(obj, list) or isinstance(obj, tuple):
+        return [to_variable(x, cuda=cuda) for x in obj]
+    if isinstance(obj, dict):
+        return {k: to_variable(v, cuda=cuda) for k, v in obj.items()}

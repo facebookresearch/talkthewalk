@@ -2,128 +2,127 @@ import argparse
 import json
 import random
 import numpy
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.autograd import Variable
 
-from sklearn.metrics import f1_score, precision_recall_fscore_support
+from sklearn.metrics import f1_score
 from matplotlib import pyplot as plt
 plt.switch_backend('agg')
 
-from data_loader import Landmarks, create_obs_dict, load_features, get_orientation_keys
+from data_loader import Landmarks, create_obs_dict, load_features, ResnetFeatures, FasttextFeatures, TextrecogFeatures, to_variable
+from utils import create_logger
 
 neighborhoods = ['fidi', 'uppereast', 'eastvillage', 'williamsburg', 'hellskitchen']
 landmarks = Landmarks(neighborhoods)
 
-random.seed(0)
+random.seed(3)
 torch.manual_seed(0)
 
 def create_split(Xs, ys):
-    train_Xs = list()
+    train_Xs = {k: list() for k in Xs.keys()}
     train_ys = list()
-    valid_Xs = list()
+    valid_Xs = {k: list() for k in Xs.keys()}
     valid_ys = list()
 
-    for data, label in zip(Xs, ys):
+    for i in range(len(ys)):
         if random.random() > 0.7:
-            valid_Xs.append(data)
-            valid_ys.append(label)
+            for k in Xs.keys():
+                valid_Xs[k].append(Xs[k][i])
+            valid_ys.append(ys[i])
         else:
-            train_Xs.append(data)
-            train_ys.append(label)
+            for k in Xs.keys():
+                train_Xs[k].append(Xs[k][i])
+            train_ys.append(ys[i])
     return train_Xs, train_ys, valid_Xs, valid_ys
 
-def batchify(Xs, ys, weights, use_fasttext=False, features=None):
-    if features == 'textrecog':
-        token_lens = [len(x) for x in Xs]
-        if use_fasttext:
-            X = torch.FloatTensor(len(Xs), max(token_lens), 300).fill_(0.)
-            for i, x in enumerate(Xs):
-                if len(x) > 0:
-                    X[i, :len(x), :] = torch.from_numpy(numpy.array(x))
-        else:
-            X = torch.LongTensor(len(Xs), max(token_lens)).fill_(0)
-            for i, x in enumerate(Xs):
-                if len(x) > 0:
-                    X[i, :len(x)] = torch.LongTensor(x)
-    else:
-        X = torch.FloatTensor(Xs)
+def load_data(neighborhoods, feature_loaders):
+    Xs = {k: list() for k in feature_loaders}
+    ys = list()
+    for n in neighborhoods:
+        for coord, ls in landmarks.landmarks[n].items():
+            y = [0.0]*len(landmarks.itos)
+            for k, feature_loader in feature_loaders.items():
+                Xs[k].append(feature_loader.get(n, coord[0], coord[1]))
 
-    X = Variable(X)
-    y = Variable(torch.FloatTensor(ys))
+            for l in ls:
+                y[landmarks.stoi[l]] = 1.0
+            ys.append(y)
 
-    return X, y, weights
+    return Xs, ys
 
-class TextrecogNetwork(nn.Module):
+def batchify(X, ys, weights, cuda=True):
+    bsz = len(ys)
+    batch = dict()
+    if 'resnet' in X:
+        batch['resnet'] = torch.FloatTensor(X['resnet'])
+    if 'fasttext' in X:
+        max_len = max(len(s) for s in X['fasttext'])
+        batch['fasttext'] = torch.FloatTensor(bsz, max_len, 300).zero_()
+        for ii in range(bsz):
+            for jj in range(len(X['fasttext'][ii])):
+                batch['fasttext'][ii, jj, :] = torch.from_numpy(X['fasttext'][ii][jj])
+    if 'textrecog' in X:
+        max_len = max(len(s) for s in X['textrecog'])
+        batch['textrecog'] = torch.LongTensor(bsz, max_len).zero_()
+        for ii in range(bsz):
+            for jj in range(len(X['textrecog'][ii])):
+                batch['textrecog'][ii][jj] = X['textrecog'][ii][jj]
+    return to_variable((batch, torch.FloatTensor(ys), weights), cuda=cuda)
 
-    def __init__(self, num_tokens, use_fasttext, pool):
+
+class LandmarkClassifier(nn.Module):
+
+    def __init__(self, textrecog_features, fasttext_features, resnet_features, num_tokens=100, pool='sum'):
         super().__init__()
-        self.use_fasttext = use_fasttext
+        self.textrecog_features = textrecog_features
+        self.fasttext_features = fasttext_features
+        self.resnet_features = resnet_features
         self.pool = pool
-        # self.linear2 = nn.Linear(4*2048, 9)
-        # self.linear = nn.Linear(2048, 9)
-        self.sigmoid = nn.Sigmoid()
-        self.loss = nn.BCELoss(size_average=True)
 
-        if not use_fasttext:
+        if self.fasttext_features:
+            self.fasttext_linear = nn.Linear(300, 9, bias=False)
+        if self.resnet_features:
+            self.resnet_linear = nn.Linear(2048, 9, bias=False)
+        if self.textrecog_features:
             self.embed = nn.Embedding(num_tokens, 300, padding_idx=0)
-        self.linear = nn.Linear(300, 9, bias=False)
-
-
-    def forward(self, x, y, weights, c_weights):
-        # out = self.linear2(x)
-        # out = self.linear(F.relu(out))
-        batchsize = x.size(0)
-        if not self.use_fasttext:
-            textrecog_embeddings = self.embed(x)
-        else:
-            textrecog_embeddings = x
-
-        logits = Variable(torch.FloatTensor(batchsize, 9))
-        for i in range(batchsize):
-            if self.pool == 'sum':
-                logits[i, :] = self.linear(textrecog_embeddings[i, :, :]).sum(dim=0)
-            else:
-                logits[i, :] = self.linear(textrecog_embeddings[i, :, :]).max(dim=0)[0]
-
-        # NLL
-        self.loss.weight = weights.view(-1)
-        prob = self.sigmoid(logits)
-
-        target = y.view(-1)
-        loss = self.loss(prob.view(-1), target)
-
-        y_pred = torch.ge(prob.float(), 0.5).float().data.numpy()
-        y_true = y.data.numpy()
-
-        f1 = f1_score(y_true, y_pred, average='weighted')
-
-        return loss, f1
-
-class ResnetNetwork(nn.Module):
-
-    def __init__(self, pool):
-        super().__init__()
-        self.pool = pool
-        self.linear = nn.Linear(2048, 9)
+            self.textrecog_linear = nn.Linear(300, 9, bias=False)
         self.sigmoid = nn.Sigmoid()
         self.loss = nn.BCEWithLogitsLoss()
 
-    def forward(self, x, y, weights):
-        # out = self.linear2(x)
-        # out = self.linear(F.relu(out))
-        x = x*2.0
-        batchsize = x.size(0)
-        logits = Variable(torch.FloatTensor(batchsize, 9))
-        for i in range(batchsize):
-            if self.pool == 'sum':
-                logits[i, :] = self.linear(x[i, :, :]).sum(dim=0)
-            else:
-                logits[i, :] = self.linear(x[i, :, :]).max(dim=0)[0]
+    def forward(self, X, y, weights):
+        batchsize = y.size(0)
+        logits = Variable(torch.FloatTensor(batchsize, 9)).zero_()
 
-        self.loss.weight = weights.view(-1)
+        if self.textrecog_features:
+            embeddings = self.embed(X['textrecog'])
+            for i in range(batchsize):
+                if self.pool == 'sum':
+                    logits[i, :] += self.textrecog_linear(embeddings[i, :, :]).sum(dim=0)
+                else:
+                    logits[i, :] += self.textrecog_linear(embeddings[i, :, :]).max(dim=0)[0]
+
+        if self.fasttext_features:
+            for i in range(batchsize):
+                rescale_factor = X['fasttext'][0, :, :].data.norm(2) / self.fasttext_linear.weight.data[0, :].norm(2)
+                if self.pool == 'sum':
+                    logits[i, :] += self.fasttext_linear(X['fasttext'][i, :, :]/rescale_factor).sum(dim=0)
+                else:
+                    logits[i, :] += self.fasttext_linear(X['fasttext'][i, :, :]/rescale_factor).max(dim=0)[0]
+
+        if self.resnet_features:
+            for i in range(batchsize):
+                rescale_factor = X['resnet'][0, :, :].data.norm(2) / self.resnet_linear.weight.data[0, :].norm(2)
+                if self.pool == 'sum':
+                    logits[i, :] += self.resnet_linear(X['resnet'][i, :, :]/rescale_factor).sum(dim=0)
+                else:
+                    logits[i, :] += self.resnet_linear(X['resnet'][i, :, :]/rescale_factor).max(dim=0)[0]
+
+
+        self.loss.weight = weights.view(-1).data
 
         target = y.view(-1)
         loss = self.loss(logits.view(-1), target)
@@ -135,49 +134,47 @@ class ResnetNetwork(nn.Module):
 
         return loss, f1
 
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--features', choices=['textrecog', 'resnet'], default='textrecog')
-    parser.add_argument('--use-fasttext', action='store_true')
+    parser.add_argument('--cuda', action='store_true')
+    parser.add_argument('--resnet-features', action='store_true')
+    parser.add_argument('--textrecog-features', action='store_true')
+    parser.add_argument('--fasttext-features', action='store_true')
     parser.add_argument('--pool', choices=['max', 'sum'], default='sum')
     parser.add_argument('--num-epochs', type=int, default=100)
     parser.add_argument('--exp-name', type=str, default='test')
 
     args = parser.parse_args()
 
+    exp_dir = os.path.join(os.environ['TALKTHEWALK_EXPDIR'], args.exp_name)
+    if os.path.exists(exp_dir):
+        raise RuntimeError('Experiment directory already exist..')
+    os.mkdir(exp_dir)
+
+    logger = create_logger(os.path.join(exp_dir, 'log.txt'))
+    logger.info(args)
+
     print(args)
+    neighborhoods = ['fidi', 'hellskitchen', 'williamsburg', 'uppereast', 'eastvillage']
+    landmarks = Landmarks(neighborhoods)
+    data_dir = './data'
 
-    if args.use_fasttext:
-        import fastText
-        f = fastText.load_model('/private/home/harm/data/wiki.en.bin')
+    feature_loaders = dict()
+    num_tokens = None
+    if args.fasttext_features:
+        textfeatures = load_features(neighborhoods)
+        obs_i2s, obs_s2i = create_obs_dict(textfeatures, neighborhoods)
+        feature_loaders['fasttext'] = FasttextFeatures(textfeatures, '/private/home/harm/data/wiki.en.bin')
+    if args.resnet_features:
+        feature_loaders['resnet'] = ResnetFeatures(os.path.join(data_dir, 'resnetfeat.json'))
+    if args.textrecog_features:
+        textfeatures = load_features(neighborhoods)
+        obs_i2s, obs_s2i = create_obs_dict(textfeatures, neighborhoods)
+        feature_loaders['textrecog'] = TextrecogFeatures(textfeatures, obs_s2i)
+        num_tokens = len(obs_i2s)
+    assert (len(feature_loaders) > 0)
 
-    if args.features == 'textrecog':
-        text_features = load_features(neighborhoods)
-        obs_i2s, obs_s2i = create_obs_dict(text_features, neighborhoods)
-    else:
-        resnet_features = json.load(open('resnetfeat.json'))
-
-    Xs = []
-    ys = []
-    for n in neighborhoods:
-        for coord, ls in landmarks.landmarks[n].items():
-            y = [0.0]*len(landmarks.itos)
-            x_features = list()
-            for key in get_orientation_keys(coord[0], coord[1]):
-                if args.features == 'textrecog':
-                    for recog in text_features[n][key]:
-                        if args.use_fasttext:
-                            x_features.append(f.get_word_vector(recog['lex_recog']))
-                        else:
-                            x_features.append(obs_s2i[recog['lex_recog']])
-                else:
-                    #res net
-                    x_features.append(resnet_features[n][key])
-            Xs.append(x_features)
-            for l in ls:
-                y[landmarks.stoi[l]] = 1.0
-            ys.append(y)
+    Xs, ys = load_data(neighborhoods, feature_loaders)
 
     train_Xs, train_ys, valid_Xs, valid_ys = create_split(Xs, ys)
 
@@ -200,26 +197,25 @@ if __name__ == '__main__':
             else:
                 valid_weights[i, j] = 1. /(len(train_ys) - positives[j])
 
-    if args.features == 'textrecog':
-        net = TextrecogNetwork(len(obs_i2s), args.use_fasttext, args.pool)
-        if args.use_fasttext:
-            class_embedding = torch.FloatTensor(9, 300).zero_()
-            for i in range(9):
-                class_embedding[i, :] = torch.FloatTensor(f.get_word_vector(landmarks.itos[i].lower().split(" ")[0]))/100.
-            net.linear.weight = nn.Parameter(class_embedding, requires_grad=True)
-        for k, p in net.named_parameters():
-            print(k)
-        opt = optim.Adam(net.parameters())
-    else:
-        net = ResnetNetwork(args.pool)
-        opt = optim.Adam(net.parameters())
+
+    net = LandmarkClassifier(args.textrecog_features, args.fasttext_features, args.resnet_features, num_tokens=num_tokens, pool=args.pool)
+    if args.fasttext_features:
+        landmark_embeddings = torch.FloatTensor(9, 300)
+        for j in range(9):
+            emb = feature_loaders['fasttext'].f.get_word_vector(landmarks.itos[j].lower().split(" ")[0])
+            rescale_factor = numpy.linalg.norm(emb, 2) / net.fasttext_linear.weight.data[j, :].norm(2)
+            landmark_embeddings[j, :] = torch.from_numpy(emb)/rescale_factor
+        net.fasttext_linear.weight.data = landmark_embeddings
+    opt = optim.Adam(net.parameters())
 
 
-    train_Xs, train_ys, train_weights = batchify(train_Xs, train_ys, train_weights, features=args.features, use_fasttext=args.use_fasttext)
-    valid_Xs, valid_ys, valid_weights = batchify(valid_Xs, valid_ys, valid_weights, features=args.features, use_fasttext=args.use_fasttext)
+    train_Xs, train_ys, train_weights = batchify(train_Xs, train_ys, train_weights, cuda=args.cuda)
+    valid_Xs, valid_ys, valid_weights = batchify(valid_Xs, valid_ys, valid_weights, cuda=args.cuda)
 
     train_f1s = list()
     test_f1s = list()
+    train_losses = list()
+    test_losses = list()
 
     best_val_loss = 1e10
     best_train_loss = 0.0
@@ -235,21 +231,30 @@ if __name__ == '__main__':
         valid_loss, valid_f1 = net.forward(valid_Xs, valid_ys, valid_weights)
         # valid_loss, valid_f1 = Variable(torch.FloatTensor([0.0])), 0.0
 
-        print("Train loss: {} | Train f1: {} | Valid loss: {} | Valid f1: {}".format(train_loss.data.numpy()[0],
+        logger.info("Train loss: {} | Train f1: {} | Valid loss: {} | Valid f1: {}".format(train_loss.data.numpy()[0],
                                                                                      train_f1,
                                                                                      valid_loss.data.numpy()[0],
                                                                                      valid_f1))
-        train_f1s.append(train_loss.data.numpy()[0])
-        test_f1s.append(valid_loss.data.numpy()[0])
+        train_losses.append(train_loss.data.numpy()[0])
+        test_losses.append(valid_loss.data.numpy()[0])
+        train_f1s.append(train_f1)
+        test_f1s.append(valid_f1)
+
         if valid_loss.data.numpy()[0] < best_val_loss:
             best_train_f1 = train_f1
             best_val_f1 = valid_f1
             best_val_loss = valid_loss.data.numpy()[0]
             best_train_loss = train_loss.data.numpy()[0]
 
-    print(best_train_loss, best_val_loss, best_train_f1, best_val_f1)
+    logger.info("{}, {}, {}, {}".format(best_train_loss, best_val_loss, best_train_f1, best_val_f1))
+
+    plt.plot(range(len(train_losses)), train_losses, label='train')
+    plt.plot(range(len(test_losses)), test_losses, label='test')
+    plt.legend()
+    plt.savefig(os.path.join(exp_dir, 'loss.png'))
+    plt.clf()
 
     plt.plot(range(len(train_f1s)), train_f1s, label='train')
     plt.plot(range(len(test_f1s)), test_f1s, label='test')
     plt.legend()
-    plt.savefig('{}.png'.format(args.exp_name))
+    plt.savefig(os.path.join(exp_dir, 'f1.png'))
