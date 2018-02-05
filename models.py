@@ -62,21 +62,45 @@ class Guide(nn.Module):
 
 
 class Tourist(nn.Module):
-    def __init__(self, in_vocab_sz, out_vocab_sz, embed_sz=20):
+    def __init__(self, goldstandard_features, resnet_features, fasttext_features, out_vocab_sz, in_vocab_sz=None, embed_sz=20):
         super(Tourist, self).__init__()
+        self.goldstandard_features = goldstandard_features
+        self.resnet_features = resnet_features
+        self.fasttext_features = fasttext_features
         self.in_vocab_sz = in_vocab_sz
         self.out_vocab_sz = out_vocab_sz
         self.embed_sz = embed_sz
-        self.emb_obsv = nn.Embedding(in_vocab_sz, embed_sz, padding_idx=0)
+        if self.goldstandard_features:
+            self.emb_obsv = nn.Embedding(in_vocab_sz, embed_sz, padding_idx=0)
+        if self.resnet_features:
+            self.resnet_linear = nn.Linear(2048, embed_sz)
+        if self.fasttext_features:
+            self.fasttext_linear = nn.Linear(300, embed_sz)
         self.out_comms = nn.Linear(embed_sz, out_vocab_sz)
         self.value_pred = nn.Linear(embed_sz, 1)
         self.in_vocab_sz = in_vocab_sz
 
-    def forward(self, observation, greedy=False):
-        hid = self.emb_obsv(observation)
-        hid = hid.sum(0)
-        hid = F.relu(hid)
-        # hid = F.dropout(hid, p=0.2, training=self.training)
+    def forward(self, X, greedy=False):
+
+        hid = None
+        if self.goldstandard_features:
+            goldstandard_hid = self.emb_obsv(X['goldstandard'])
+            goldstandard_hid = goldstandard_hid.sum(1)
+            hid = goldstandard_hid
+
+        if self.resnet_features:
+            resnet_hid = self.resnet_linear(X['resnet']).sum(dim=1)
+            if hid is not None:
+                hid += resnet_hid
+            else:
+                hid = resnet_hid
+
+        if self.fasttext_features:
+            fasttext_hid = self.fasttext_linear(X['fasttext']).sum(dim=1)
+            if hid is not None:
+                hid += fasttext_hid
+            else:
+                hid = fasttext_hid
 
         probs = F.sigmoid(self.out_comms(hid))
         comms = probs.cpu().bernoulli()
@@ -84,7 +108,7 @@ class Tourist(nn.Module):
             comms = torch.FloatTensor(self.in_vocab_sz).zero_()
             comms[probs>0.5] = 1.0
 
-        value = self.value_pred(hid.detach())
+        value = self.value_pred(hid)
         return comms, probs, value
 
     def save(self, path):

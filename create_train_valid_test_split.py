@@ -1,8 +1,6 @@
-import random
 import json
 
-train_neighborhoods = ['fidi', 'williamsburg', 'eastvillage', 'uppereast']
-test_neighborhoods = ['hellskitchen']
+neighborhoods = ['fidi', 'williamsburg', 'eastvillage', 'uppereast', 'hellskitchen']
 
 boundaries = dict()
 boundaries['hellskitchen'] = [3, 3]
@@ -13,10 +11,17 @@ boundaries['uppereast'] = [3, 3]
 
 
 def get_configurations(neighborhoods):
-    configurations = list()
+    train_configurations = list()
+    valid_configurations = list()
+    test_configurations = list()
+
     for neighborhood in neighborhoods:
-        for min_x in range(boundaries[neighborhood][0]):
-            for min_y in range(boundaries[neighborhood][1]):
+        cnt = 0
+        for minimum_x in range(boundaries[neighborhood][0]+1):
+            for minimum_y in range(boundaries[neighborhood][1]+1):
+                min_x = minimum_x*2
+                min_y = minimum_y*2
+
                 boundary_config = list()
                 for i in range(4):
                     for j in range(4):
@@ -25,23 +30,23 @@ def get_configurations(neighborhoods):
 
                         config = {'neighborhood': neighborhood,
                                   'target_location': [x, y, 0],
-                                  'boundaries': [min_x, min_y, min_x + 4, min_y + 4]}
+                                  'boundaries': [min_x, min_y, min_x + 3, min_y + 3]}
 
                         boundary_config.append(config)
-                configurations.append(boundary_config)
-    return configurations
 
-train_configurations, valid_configurations = list(), list()
-configs = get_configurations(train_neighborhoods)
-for config in configs:
-    if random.random() > 0.25:
-        train_configurations.extend(config)
-    else:
-        valid_configurations.extend(config)
+                        if minimum_y == 0 and minimum_x < 2:
+                            valid_configurations.append(config)
+                            cnt += 1
+                        elif minimum_y == boundaries[neighborhood][1] and minimum_x < 2:
+                            test_configurations.append(config)
+                            cnt += 1
+                        elif not (minimum_y >= boundaries[neighborhood][1]-1 and minimum_x < 3):
+                            train_configurations.append(config)
+                            cnt += 1
+        print(neighborhood, cnt/16)
+    return train_configurations, valid_configurations, test_configurations
 
-test_configurations = list()
-for c in get_configurations(test_neighborhoods):
-    test_configurations.extend(c)
+train_configurations, valid_configurations, test_configurations = get_configurations(neighborhoods)
 
 print(len(train_configurations), len(valid_configurations), len(test_configurations))
 

@@ -9,20 +9,19 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.autograd import Variable
 
-from sklearn.metrics import f1_score
+from sklearn.metrics import f1_score, precision_score, recall_score
+from sklearn.neighbors import KNeighborsClassifier
 from matplotlib import pyplot as plt
 plt.switch_backend('agg')
 
-from data_loader import Landmarks, create_obs_dict, load_features, ResnetFeatures, FasttextFeatures, TextrecogFeatures, to_variable
+from data_loader import Landmarks, create_obs_dict, load_features, ResnetFeatures, FasttextFeatures, TextrecogFeatures, to_variable, get_orientation_keys
 from utils import create_logger
 
 neighborhoods = ['fidi', 'uppereast', 'eastvillage', 'williamsburg', 'hellskitchen']
 landmarks = Landmarks(neighborhoods)
 
-random.seed(3)
-torch.manual_seed(0)
-
 def create_split(Xs, ys):
+    random.seed(1)
     train_Xs = {k: list() for k in Xs.keys()}
     train_ys = list()
     valid_Xs = {k: list() for k in Xs.keys()}
@@ -51,6 +50,7 @@ def load_data(neighborhoods, feature_loaders):
             for l in ls:
                 y[landmarks.stoi[l]] = 1.0
             ys.append(y)
+            # print(ls, n, get_orientation_keys(coord[0], coord[1]))
 
     return Xs, ys
 
@@ -61,7 +61,7 @@ def batchify(X, ys, weights, cuda=True):
         batch['resnet'] = torch.FloatTensor(X['resnet'])
     if 'fasttext' in X:
         max_len = max(len(s) for s in X['fasttext'])
-        batch['fasttext'] = torch.FloatTensor(bsz, max_len, 300).zero_()
+        batch['fasttext'] = torch.FloatTensor(bsz, max_len, X['fasttext'][0][0].shape[0]).zero_()
         for ii in range(bsz):
             for jj in range(len(X['fasttext'][ii])):
                 batch['fasttext'][ii, jj, :] = torch.from_numpy(X['fasttext'][ii][jj])
@@ -76,7 +76,7 @@ def batchify(X, ys, weights, cuda=True):
 
 class LandmarkClassifier(nn.Module):
 
-    def __init__(self, textrecog_features, fasttext_features, resnet_features, num_tokens=100, pool='sum'):
+    def __init__(self, textrecog_features, fasttext_features, resnet_features, num_tokens=100, pool='sum', resnet_dim=2048, fasttext_dim=300):
         super().__init__()
         self.textrecog_features = textrecog_features
         self.fasttext_features = fasttext_features
@@ -84,12 +84,12 @@ class LandmarkClassifier(nn.Module):
         self.pool = pool
 
         if self.fasttext_features:
-            self.fasttext_linear = nn.Linear(300, 9, bias=False)
+            self.fasttext_linear = nn.Linear(fasttext_dim, 9, bias=False)
         if self.resnet_features:
-            self.resnet_linear = nn.Linear(2048, 9, bias=False)
+            self.resnet_linear = nn.Linear(resnet_dim, 9, bias=False)
         if self.textrecog_features:
-            self.embed = nn.Embedding(num_tokens, 300, padding_idx=0)
-            self.textrecog_linear = nn.Linear(300, 9, bias=False)
+            self.embed = nn.Embedding(num_tokens, 50, padding_idx=0)
+            self.textrecog_linear = nn.Linear(50, 9, bias=False)
         self.sigmoid = nn.Sigmoid()
         self.loss = nn.BCEWithLogitsLoss()
 
@@ -107,19 +107,17 @@ class LandmarkClassifier(nn.Module):
 
         if self.fasttext_features:
             for i in range(batchsize):
-                rescale_factor = X['fasttext'][0, :, :].data.norm(2) / self.fasttext_linear.weight.data[0, :].norm(2)
                 if self.pool == 'sum':
-                    logits[i, :] += self.fasttext_linear(X['fasttext'][i, :, :]/rescale_factor).sum(dim=0)
+                    logits[i, :] += self.fasttext_linear(X['fasttext'][i, :, :]).sum(dim=0)
                 else:
                     logits[i, :] += self.fasttext_linear(X['fasttext'][i, :, :]/rescale_factor).max(dim=0)[0]
 
         if self.resnet_features:
             for i in range(batchsize):
-                rescale_factor = X['resnet'][0, :, :].data.norm(2) / self.resnet_linear.weight.data[0, :].norm(2)
                 if self.pool == 'sum':
-                    logits[i, :] += self.resnet_linear(X['resnet'][i, :, :]/rescale_factor).sum(dim=0)
+                    logits[i, :] += self.resnet_linear(X['resnet'][i, :, :]).sum(dim=0)
                 else:
-                    logits[i, :] += self.resnet_linear(X['resnet'][i, :, :]/rescale_factor).max(dim=0)[0]
+                    logits[i, :] += self.resnet_linear(X['resnet'][i, :, :]).max(dim=0)[0]
 
 
         self.loss.weight = weights.view(-1).data
@@ -127,12 +125,14 @@ class LandmarkClassifier(nn.Module):
         target = y.view(-1)
         loss = self.loss(logits.view(-1), target)
 
-        y_pred = torch.ge(logits.float(), 0.0).float().data.numpy()
+        y_pred = torch.ge(self.sigmoid(logits), 0.5).float().data.numpy()
         y_true = y.data.numpy()
 
         f1 = f1_score(y_true, y_pred, average='weighted')
+        precision = precision_score(y_true, y_pred, average='weighted')
+        recall = recall_score(y_true, y_pred, average='weighted')
 
-        return loss, f1
+        return loss, f1, precision, recall
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -140,11 +140,14 @@ if __name__ == '__main__':
     parser.add_argument('--resnet-features', action='store_true')
     parser.add_argument('--textrecog-features', action='store_true')
     parser.add_argument('--fasttext-features', action='store_true')
+    parser.add_argument('--pca', action='store_true')
+    parser.add_argument('--n_components', type=int, default=100)
     parser.add_argument('--pool', choices=['max', 'sum'], default='sum')
     parser.add_argument('--num-epochs', type=int, default=100)
     parser.add_argument('--exp-name', type=str, default='test')
 
     args = parser.parse_args()
+    torch.manual_seed(0)
 
     exp_dir = os.path.join(os.environ['TALKTHEWALK_EXPDIR'], args.exp_name)
     if os.path.exists(exp_dir):
@@ -164,9 +167,9 @@ if __name__ == '__main__':
     if args.fasttext_features:
         textfeatures = load_features(neighborhoods)
         obs_i2s, obs_s2i = create_obs_dict(textfeatures, neighborhoods)
-        feature_loaders['fasttext'] = FasttextFeatures(textfeatures, '/private/home/harm/data/wiki.en.bin')
+        feature_loaders['fasttext'] = FasttextFeatures(textfeatures, '/private/home/harm/data/wiki.en.bin', pca=args.pca, n_components=args.n_components)
     if args.resnet_features:
-        feature_loaders['resnet'] = ResnetFeatures(os.path.join(data_dir, 'resnetfeat.json'))
+        feature_loaders['resnet'] = ResnetFeatures(os.path.join(data_dir, 'resnetfeat.json'), pca=args.pca, n_components=args.n_components)
     if args.textrecog_features:
         textfeatures = load_features(neighborhoods)
         obs_i2s, obs_s2i = create_obs_dict(textfeatures, neighborhoods)
@@ -197,20 +200,52 @@ if __name__ == '__main__':
             else:
                 valid_weights[i, j] = 1. /(len(train_ys) - positives[j])
 
-
-    net = LandmarkClassifier(args.textrecog_features, args.fasttext_features, args.resnet_features, num_tokens=num_tokens, pool=args.pool)
-    if args.fasttext_features:
-        landmark_embeddings = torch.FloatTensor(9, 300)
-        for j in range(9):
-            emb = feature_loaders['fasttext'].f.get_word_vector(landmarks.itos[j].lower().split(" ")[0])
-            rescale_factor = numpy.linalg.norm(emb, 2) / net.fasttext_linear.weight.data[j, :].norm(2)
-            landmark_embeddings[j, :] = torch.from_numpy(emb)/rescale_factor
-        net.fasttext_linear.weight.data = landmark_embeddings
+    resnet_dim, fasttext_dim = 2048, 300
+    if args.pca:
+        resnet_dim = args.n_components
+        fasttext_dim = args.n_components
+    net = LandmarkClassifier(args.textrecog_features, args.fasttext_features, args.resnet_features,
+                             num_tokens=num_tokens, pool=args.pool, resnet_dim=resnet_dim, fasttext_dim=fasttext_dim)
+    # if args.fasttext_features:
+        # landmark_embeddings = torch.FloatTensor(9, 300)
+        # for j in range(9):
+        #     emb = feature_loaders['fasttext'].f.get_word_vector(landmarks.itos[j].lower().split(" ")[0])
+        #     rescale_factor = numpy.linalg.norm(emb, 2) / net.fasttext_linear.weight.data[j, :].norm(2)
+        #     landmark_embeddings[j, :] = torch.from_numpy(emb)/rescale_factor
+        # net.fasttext_linear.weight.data = landmark_embeddings
     opt = optim.Adam(net.parameters())
 
 
     train_Xs, train_ys, train_weights = batchify(train_Xs, train_ys, train_weights, cuda=args.cuda)
     valid_Xs, valid_ys, valid_weights = batchify(valid_Xs, valid_ys, valid_weights, cuda=args.cuda)
+
+
+    target = valid_ys.data.numpy()
+    ones = numpy.ones_like(target)
+    rand = numpy.random.randint(2, size=target.shape)
+
+    print("All positive: {}, {}, {}".format(f1_score(target, ones, average='weighted'), precision_score(target, ones, average='weighted'), recall_score(target, ones, average='weighted')))
+    print("Random (0.5): {}, {}, {}".format(f1_score(target, rand, average='weighted'), precision_score(target, rand, average='weighted'), recall_score(target, rand, average='weighted')))
+
+    # NN classifier
+    if args.fasttext_features or args.resnet_features:
+        classifiers = list()
+        k = list(train_Xs.keys())[0]
+        for j in range(train_ys.size(1)):
+            classifiers.append(KNeighborsClassifier(n_neighbors=1))
+            train_feats = train_Xs[k].sum(dim=1).data.numpy()
+            train_labels = train_ys[:, j].data.numpy()
+            # data = train_Xs[k]
+            classifiers[j].fit(train_feats, train_labels)
+
+        nn_pred = numpy.zeros((valid_ys.size(0), len(classifiers)))
+        valid_feats = valid_Xs[k][:, :, :].sum(dim=1)
+        for j, classifier in enumerate(classifiers):
+            nn_pred[:, j] = classifier.predict(valid_feats)
+
+        print("NN: {}, {}, {}".format(f1_score(target, nn_pred, average='weighted'),
+                                         precision_score(target, nn_pred, average='weighted'),
+                                         recall_score(target, nn_pred, average='weighted')))
 
     train_f1s = list()
     test_f1s = list()
@@ -221,20 +256,27 @@ if __name__ == '__main__':
     best_train_loss = 0.0
     best_train_f1 = 0.0
     best_val_f1 = 0.0
-
+    best_val_precision = 0.0
+    best_val_recall = 0.0
 
     for i in range(args.num_epochs):
-        train_loss, train_f1 = net.forward(train_Xs, train_ys, train_weights)
+        train_loss, train_f1, train_precision, train_recall = net.forward(train_Xs, train_ys, train_weights)
         opt.zero_grad()
         train_loss.backward()
         opt.step()
-        valid_loss, valid_f1 = net.forward(valid_Xs, valid_ys, valid_weights)
+        valid_loss, valid_f1, valid_precision, valid_recall = net.forward(valid_Xs, valid_ys, valid_weights)
         # valid_loss, valid_f1 = Variable(torch.FloatTensor([0.0])), 0.0
 
-        logger.info("Train loss: {} | Train f1: {} | Valid loss: {} | Valid f1: {}".format(train_loss.data.numpy()[0],
-                                                                                     train_f1,
-                                                                                     valid_loss.data.numpy()[0],
-                                                                                     valid_f1))
+        logger.info("Train loss: {} | Train f1: {} | Train precision: {} | Train recall: {} |"
+                    " Valid loss: {} | Valid f1: {} | Valid precision: {} | valid recall: {}".format(
+            train_loss.data.numpy()[0],
+            train_f1,
+            train_precision,
+            train_recall,
+            valid_loss.data.numpy()[0],
+            valid_f1,
+            valid_precision,
+            valid_recall))
         train_losses.append(train_loss.data.numpy()[0])
         test_losses.append(valid_loss.data.numpy()[0])
         train_f1s.append(train_f1)
@@ -245,8 +287,10 @@ if __name__ == '__main__':
             best_val_f1 = valid_f1
             best_val_loss = valid_loss.data.numpy()[0]
             best_train_loss = train_loss.data.numpy()[0]
+            best_val_precision = valid_precision
+            best_val_recall = valid_recall
 
-    logger.info("{}, {}, {}, {}".format(best_train_loss, best_val_loss, best_train_f1, best_val_f1))
+    logger.info("{}, {}, {}, {}, {}, {}".format(best_train_loss, best_val_loss, best_train_f1, best_val_f1, best_val_precision, best_val_recall))
 
     plt.plot(range(len(train_losses)), train_losses, label='train')
     plt.plot(range(len(test_losses)), test_losses, label='test')

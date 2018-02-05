@@ -13,7 +13,7 @@ from sklearn.utils import shuffle
 from matplotlib import pyplot as plt
 plt.switch_backend('agg')
 
-from data_loader import Landmarks, create_batch, load_data, load_features, create_obs_dict, TextrecogFeatures, GoldstandardFeatures
+from data_loader import Landmarks, create_batch, load_data, load_features, create_obs_dict, FasttextFeatures, GoldstandardFeatures, ResnetFeatures
 from models import Tourist, Guide
 from utils import create_logger
 
@@ -23,7 +23,7 @@ def eval_epoch(X, landmarks, y, tourist, guide, batch_sz):
 
     correct, total = 0, 0
     for ii in range(0, len(y), args.batch_sz):
-        X_batch = X[ii:ii + batch_sz]
+        X_batch = {k: X[k][ii:ii + batch_sz] for k in X.keys()}
         landmark_batch = landmarks[ii:ii + batch_sz]
         y_batch = y[ii:ii + batch_sz]
         batch_in, batch_landmarks, batch_mask, batch_tgt = create_batch(X_batch, landmark_batch, y_batch,
@@ -39,7 +39,7 @@ def eval_epoch(X, landmarks, y, tourist, guide, batch_sz):
         # acc
         correct += sum(
             [1.0 for pred, target in zip(torch.max(out_g, 1)[1].cpu().data, batch_tgt.cpu().data) if pred == target])
-        total += len(X_batch)
+        total += len(y_batch)
 
     return correct/total
 
@@ -47,12 +47,14 @@ def eval_epoch(X, landmarks, y, tourist, guide, batch_sz):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--cuda', action='store_true')
-    parser.add_argument('--features', choices=['goldstandard', 'textrecog', 'resnet'], default='textrecog')
+    parser.add_argument('--resnet-features', action='store_true')
+    parser.add_argument('--fasttext-features', action='store_true')
+    parser.add_argument('--goldstandard-features', action='store_true')
+    parser.add_argument('--softmax', choices=['landmarks', 'location'], default='location')
     parser.add_argument('--vocab-sz', type=int, default=10)
     parser.add_argument('--embed-sz', type=int, default=32)
     parser.add_argument('--batch-sz', type=int, default=64)
-    parser.add_argument('--num-epochs', type=int, default=100000)
-    parser.add_argument('--setting', type=str, default='OAE')
+    parser.add_argument('--num-epochs', type=int, default=500)
     parser.add_argument('--exp-name', type=str, default='test')
 
     args = parser.parse_args()
@@ -72,30 +74,37 @@ if __name__ == '__main__':
     landmark_map = Landmarks(neighborhoods, include_empty_corners=True)
     textfeatures = load_features(neighborhoods)
 
+    data_dir = os.environ.get('TALKTHEWALK_DATADIR', './data')
+
     obs_i2s, obs_s2i = create_obs_dict(textfeatures, neighborhoods)
 
-    train_configs = json.load(open('configurations.train.json'))
-    valid_configs = json.load(open('configurations.valid.json'))
-    test_configs = json.load(open('configurations.test.json'))
+    train_configs = json.load(open(os.path.join(data_dir, 'configurations.train.json')))
+    valid_configs = json.load(open(os.path.join(data_dir, 'configurations.valid.json')))
+    test_configs = json.load(open(os.path.join(data_dir, 'configurations.test.json')))
 
-    feature_loader = None
-    if args.features == 'textrecog':
+    feature_loaders = dict()
+    in_vocab_sz = None
+    if args.fasttext_features:
         textfeatures = load_features(neighborhoods)
         obs_i2s, obs_s2i = create_obs_dict(textfeatures, neighborhoods)
-        feature_loader = TextrecogFeatures(textfeatures, obs_s2i)
-        feat_vocab_sz = len(obs_i2s)
-    if args.features == 'goldstandard':
-        feature_loader = GoldstandardFeatures(landmark_map)
-        feat_vocab_sz = len(landmark_map.itos) + 1
-    assert (feature_loader is not None)
+        feature_loaders['fasttext'] = FasttextFeatures(textfeatures, '/private/home/harm/data/wiki.en.bin')
+    if args.resnet_features:
+        feature_loaders['resnet'] = ResnetFeatures(os.path.join(data_dir, 'resnetfeat.json'))
+    if args.goldstandard_features:
+        feature_loaders['goldstandard'] = GoldstandardFeatures(landmark_map)
+        in_vocab_sz = len(landmark_map.itos) + 1
+    assert (len(feature_loaders) > 0)
 
-    X_train, landmark_train, y_train = load_data(train_configs, feature_loader, landmark_map)
-    X_valid, landmark_valid, y_valid = load_data(valid_configs, feature_loader, landmark_map)
-    X_test, landmark_test, y_test = load_data(test_configs, feature_loader, landmark_map)
+    X_train, landmark_train, y_train = load_data(train_configs, feature_loaders, landmark_map, softmax=args.softmax)
+    X_valid, landmark_valid, y_valid = load_data(valid_configs, feature_loaders, landmark_map, softmax=args.softmax)
+    X_test, landmark_test, y_test = load_data(test_configs, feature_loaders, landmark_map, softmax=args.softmax)
 
+    num_embeddings = len(landmark_map.types)+1
+    if args.softmax == 'location':
+        num_embeddings = len(landmark_map.global_coord_to_idx)
     # create models
-    guide = Guide(args.vocab_sz, len(landmark_map.types)+1, embed_sz=args.embed_sz)
-    tourist = Tourist(feat_vocab_sz, args.vocab_sz, embed_sz=args.embed_sz)
+    guide = Guide(args.vocab_sz, num_embeddings, embed_sz=args.embed_sz)
+    tourist = Tourist(args.goldstandard_features, args.resnet_features, args.fasttext_features, args.vocab_sz, in_vocab_sz=in_vocab_sz, embed_sz=args.embed_sz)
 
     if args.cuda:
         guide = guide.cuda()
@@ -107,17 +116,16 @@ if __name__ == '__main__':
     val_acc = list()
     test_acc = list()
 
-
-    best_val_acc = 0.0
+    best_train_acc, best_val_acc, best_test_acc = 0.0, 0.0, 0.0
 
     for epoch in range(1, args.num_epochs):
         # train
         tourist.train(); guide.train()
-        X_train, landmark_train, y_train = shuffle(X_train, landmark_train, y_train)
+        # X_train, landmark_train, y_train = shuffle(X_train, landmark_train, y_train)
         g_losses, t_rl_losses, t_val_losses = [], [], []
         g_accs = []
         for ii in range(0, len(y_train), args.batch_sz):
-            X_batch = X_train[ii:ii+args.batch_sz]
+            X_batch = {k: X_train[k][ii:ii+args.batch_sz] for k in X_train.keys()}
             landmark_batch = landmark_train[ii:ii+args.batch_sz]
             y_batch = y_train[ii:ii+args.batch_sz]
             batch_in, batch_landmarks, batch_mask, batch_tgt = create_batch(X_batch, landmark_batch, y_batch, cuda=args.cuda)
@@ -182,6 +190,10 @@ if __name__ == '__main__':
                 tourist.save(os.path.join(exp_dir, 'tourist.pt'))
                 guide.save(os.path.join(exp_dir, 'guide.pt'))
                 best_val_acc = val_accuracy
+                best_train_acc = g_acc
+                best_test_acc = test_accuracy
+
+    print(best_train_acc, best_val_acc, best_test_acc)
 
     plt.plot(range(len(train_acc)), train_acc, label='train')
     plt.plot(range(len(val_acc)), val_acc, label='valid')
