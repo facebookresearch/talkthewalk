@@ -9,6 +9,7 @@ boundaries['eastvillage'] = [3, 4]
 boundaries['fidi'] = [2, 3]
 boundaries['uppereast'] = [3, 3]
 
+key2set = dict()
 
 def get_configurations(neighborhoods):
     train_configurations = list()
@@ -34,14 +35,17 @@ def get_configurations(neighborhoods):
 
                         boundary_config.append(config)
 
-                        if minimum_y == 0 and minimum_x < 2:
-                            valid_configurations.append(config)
+                        if not (minimum_y >= boundaries[neighborhood][1]-1 and minimum_x < 3):
+                            key2set[(neighborhood, minimum_x, minimum_y)] = 'train'
+                            train_configurations.append(config)
                             cnt += 1
                         elif minimum_y == boundaries[neighborhood][1] and minimum_x < 2:
+                            key2set[(neighborhood, minimum_x, minimum_y)] = 'test'
                             test_configurations.append(config)
                             cnt += 1
-                        elif not (minimum_y >= boundaries[neighborhood][1]-1 and minimum_x < 3):
-                            train_configurations.append(config)
+                        else:
+                            key2set[(neighborhood, minimum_x, minimum_y)] = 'valid'
+                            valid_configurations.append(config)
                             cnt += 1
         print(neighborhood, cnt/16)
     return train_configurations, valid_configurations, test_configurations
@@ -58,3 +62,40 @@ with open('configurations.valid.json', 'w') as f:
 
 with open('configurations.test.json', 'w') as f:
     json.dump(test_configurations, f)
+
+
+train_dialogues = list()
+valid_dialogues = list()
+test_dialogues = list()
+
+data = json.load(open('./data/talkthewalk.train.json'))
+data.extend(json.load(open('./data/talkthewalk.valid.json')))
+data.extend(json.load(open('./data/talkthewalk.test.json')))
+
+not_included = dict()
+
+for dialogue in data:
+    key = (dialogue['neighborhood'], dialogue['boundaries'][0]//2, dialogue['boundaries'][1]//2)
+
+    if key2set.get(key) == 'train':
+        train_dialogues.append(dialogue)
+    elif key2set.get(key) == 'valid':
+        valid_dialogues.append(dialogue)
+    elif key2set.get(key) == 'test':
+        test_dialogues.append(dialogue)
+    else:
+        if key not in not_included:
+            not_included[key] = True
+
+print(len(train_dialogues))
+print(len(valid_dialogues))
+print(len(test_dialogues))
+
+with open('talkthewalk.train.json', 'w') as f:
+    json.dump(train_dialogues, f)
+
+with open('talkthewalk.valid.json', 'w') as f:
+    json.dump(valid_dialogues, f)
+
+with open('talkthewalk.test.json', 'w') as f:
+    json.dump(test_dialogues, f)

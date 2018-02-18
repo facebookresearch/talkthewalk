@@ -5,46 +5,119 @@ import random
 import torch
 
 from torch.autograd import Variable
-from data_loader import create_obs_dict, Landmarks, load_features, FasttextFeatures, GoldstandardFeatures, ResnetFeatures, load_data_multiple_step
-from predict_location_emergent import Guide, Tourist
-from predict_location_multiple_step import create_batch, LocationPredictor, epoch
+from data_loader import create_obs_dict, Landmarks, load_features, FasttextFeatures, GoldstandardFeatures, ResnetFeatures, load_data_multiple_step, step_agnostic
+from predict_location_multiple_step import create_batch, LocationPredictor
+from predict_location_communication import Tourist, Guide
 
 
-def evaluate(configs, tourist, guide, landmark_map, feature_loader):
+# def evaluate(configs, tourist, guide, landmark_map, feature_loader):
+#     correct, total = 0.0, 0.0
+#     for config in configs:
+#         target_x = config['target_location'][0]
+#         target_y = config['target_location'][1]
+#
+#         landmarks, target_index = landmark_map.get_landmarks(config['neighborhood'], config['boundaries'][0],
+#                                                               config['boundaries'][1], target_x, target_y)
+#
+#         max_eval = 3
+#         for _ in range(50):
+#             sampled_x, sampled_y = config['boundaries'][0] + random.randint(0, 3), config['boundaries'][
+#                 1] + random.randint(0, 3)
+#
+#             features = feature_loader.get(config['neighborhood'], sampled_x, sampled_y)
+#             X, l, mask, y = create_batch([features], [landmarks], [target_index])
+#
+#             t_comms, t_probs, t_val = tourist(X)
+#             t_msg = Variable(t_comms.data)
+#             if args.cuda:
+#                 t_msg = t_msg.cuda()
+#             g_prob = guide(t_msg, l, mask)
+#
+#             sampled_index = torch.multinomial(g_prob, 1)
+#             if sampled_index == target_index:
+#                 if (sampled_x, sampled_y) == (target_x, target_y):
+#                     correct += 1
+#                     break
+#                 else:
+#                     max_eval -= 1
+#                     if max_eval <= 0:
+#                         break
+#         total += 1
+#
+#     return ((correct / total) * 100)
+
+
+def evaluate(configs, tourist, guide, landmark_map, feature_loaders, random_walk=True):
+    tourist.cuda()
+    guide.cuda()
+    max_steps = tourist.max_steps
+    print(max_steps)
     correct, total = 0.0, 0.0
-    for config in configs:
-        target_x = config['target_location'][0]
-        target_y = config['target_location'][1]
 
-        landmarks, target_index = landmark_map.get_landmarks(config['neighborhood'], config['boundaries'][0],
-                                                              config['boundaries'][1], target_x, target_y)
+    for config in configs:
+        neighborhood = config['neighborhood']
+        boundaries = config['boundaries']
+        target_loc = config['target_location']
+
+        landmarks, target_index = landmark_map.get_landmarks_2d(config['neighborhood'], boundaries, target_loc)
+
+        flat_target_index = target_index[0]*4 + target_index[1]
 
         max_eval = 3
-        for _ in range(50):
-            sampled_x, sampled_y = config['boundaries'][0] + random.randint(0, 3), config['boundaries'][
-                1] + random.randint(0, 3)
+        loc = [boundaries[0] + random.randint(0, 3), boundaries[1] + random.randint(0, 3), 0]
+        feature_list = {k: [feature_loaders[k].get(config['neighborhood'], loc)] for k in feature_loaders.keys()}
+        action_list = []
+        locations = [loc]
+        predicted = list()
 
-            features = feature_loader.get(config['neighborhood'], sampled_x, sampled_y)
-            X, l, mask, y = create_batch([features], [landmarks], [target_index])
 
-            t_comms, t_probs, t_val = tourist(X)
-            t_msg = Variable(t_comms.data)
-            if args.cuda:
-                t_msg = t_msg.cuda()
-            g_prob = guide(t_msg, l, mask)
-
-            sampled_index = torch.multinomial(g_prob, 1)
-            if sampled_index == target_index:
-                if (sampled_x, sampled_y) == (target_x, target_y):
-                    correct += 1
-                    break
+        for _ in range(150):
+            if len(action_list) == max_steps - 1:
+                features = {k: [v] for k, v in feature_list.items()}
+                if len(action_list) == 0:
+                    actions = [[0]]
                 else:
-                    max_eval -= 1
-                    if max_eval <= 0:
+                    actions = [action_list]
+
+                y_batch = [[locations[0][0]-boundaries[0], locations[0][1] - boundaries[1]]]
+                X_batch, action_batch, landmark_batch, y_batch = create_batch(features, actions, [landmarks], y_batch, cuda=True)
+
+                t_comms, t_probs, t_val = tourist(X_batch, action_batch)
+                prob = guide(t_comms, landmark_batch)
+
+
+                sampled_index = torch.multinomial(prob, 1)
+                if sampled_index == flat_target_index:
+                    predicted.append(locations[0])
+                    if locations[0][0] == target_loc[0] and locations[0][1] == target_loc[1]:
+                        correct += 1
                         break
-        total += 1
+                    else:
+                        max_eval -= 1
+                        if max_eval <= 0:
+                            break
+
+            if random_walk:
+                act = random.randint(0, 3)
+                action_list.append(act)
+                loc = step_agnostic(act, loc, boundaries)
+                locations.append(loc)
+            else:
+                sampled_x, sampled_y = config['boundaries'][0] + random.randint(0, 3), config['boundaries'][
+                    1] + random.randint(0, 3)
+
+            for k in feature_loaders.keys():
+                feature_list[k].append(feature_loaders[k].get(config['neighborhood'], loc))
+
+            if len(action_list) > max_steps - 1:
+                feature_list = {k: feature_list[k][1:] for k in feature_loaders.keys()}
+                action_list = action_list[1:]
+                locations = locations[1:]
+
+        total += 1.
 
     return ((correct / total) * 100)
+
 
 def evaluate_location_predictor(configs, net, landmark_map, feature_loaders, random_walk=True):
     net.cuda()
@@ -185,9 +258,9 @@ if __name__ == '__main__':
         tourist = Tourist.load(args.tourist_model)
         guide = Guide.load(args.guide_model)
 
-        train_acc = evaluate(train_configs, tourist, guide, landmark_map, feature_loader)
-        valid_acc = evaluate(valid_configs, tourist, guide, landmark_map, feature_loader)
-        test_acc = evaluate(test_configs, tourist, guide, landmark_map, feature_loader)
+        train_acc = evaluate(train_configs, tourist, guide, landmark_map, feature_loaders)
+        valid_acc = evaluate(valid_configs, tourist, guide, landmark_map, feature_loaders)
+        test_acc = evaluate(test_configs, tourist, guide, landmark_map, feature_loaders)
 
         print(train_acc, valid_acc, test_acc)
 

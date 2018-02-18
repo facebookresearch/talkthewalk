@@ -49,15 +49,15 @@ class LocationPredictor(nn.Module):
             self.resnet_emb_linear = nn.Linear(2048, emb_sz)
         self.emb_map = MapEmbedding2d(num_embeddings, emb_sz, init_std=0.01)
         self.max_steps = max_steps
-        self.conv_weight = nn.Parameter(torch.FloatTensor(
-                emb_sz, emb_sz, 3, 3).cuda())
-        # weight = Variable(torch.FloatTensor(emb_sz, emb_sz, 3, 3)).cuda()
-        # for i in range(3):
-        #     for j in range(3):
-        #         weight[:, :, i, j] = Variable(torch.eye(emb_sz, emb_sz))
-        # self.conv_weight = weight
-        std = 1.0/(emb_sz*9)
-        self.conv_weight.data.uniform_(-std, std)
+        # self.conv_weight = nn.Parameter(torch.FloatTensor(
+        #         emb_sz, emb_sz, 3, 3).cuda())
+        # std = 1.0/(emb_sz*9)
+        # self.conv_weight.data.uniform_(-std, std)
+        weight = Variable(torch.FloatTensor(emb_sz, emb_sz, 3, 3)).cuda()
+        for i in range(3):
+            for j in range(3):
+                weight[:, :, i, j] = Variable(torch.eye(emb_sz, emb_sz))
+        self.conv_weight = weight
         self.loss = nn.CrossEntropyLoss()
         self.mask_conv = mask_conv
         self.condition_on_action = condition_on_action
@@ -153,7 +153,9 @@ class LocationPredictor(nn.Module):
         else:
             landmarks = torch.cat(l_embs, 1)
             landmarks = landmarks.resize(batch_size, landmarks.size(1), 16).transpose(1, 2)
-
+            print(landmarks[0, 0, :].norm(2))
+            print(emb[0, :].norm(2))
+            print('-' * 80)
             logits = torch.bmm(landmarks, emb.unsqueeze(-1)).squeeze(-1)
             prob = F.softmax(logits, dim=1)
 
@@ -209,7 +211,6 @@ def create_batch(X, actions, landmarks, y, cuda=False):
             for jj in range(len(X['goldstandard'][ii])):
                 for kk in range(len(X['goldstandard'][ii][jj])):
                     batch['goldstandard'][ii, jj, kk] = X['goldstandard'][ii][jj][kk]
-
 
     max_landmarks_per_coord = max([max([max([len(y) for y in x]) for x in l]) for l in landmarks])
     landmark_batch = torch.LongTensor(bsz, 4, 4, max_landmarks_per_coord).zero_()
@@ -268,7 +269,7 @@ if __name__ == '__main__':
     parser.add_argument('--condition-on-action', action='store_true')
     parser.add_argument('--mask-conv', action='store_true')
     parser.add_argument('--num-steps', type=int, default=2)
-    parser.add_argument('--softmax', choices=['landmarks', 'location'], default='location')
+    parser.add_argument('--softmax', choices=['landmarks', 'location'], default='landmarks')
     parser.add_argument('--emb-sz', type=int, default=512)
     parser.add_argument('--num-epochs', type=int, default=500)
     parser.add_argument('--batch_sz', type=int, default=64)

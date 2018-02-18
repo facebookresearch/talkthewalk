@@ -84,23 +84,21 @@ class Landmarks(object):
 
         return landmarks, label_index
 
-    def get_landmarks_2d(self, neighborhood, min_x, min_y, x, y):
-        assert (x, y) in self.coord_to_idx[neighborhood], "x, y coordinates do not have landmarks"
+    def get_landmarks_2d(self, neighborhood, boundaries, target_loc):
+        assert tuple(target_loc[:2]) in self.coord_to_idx[neighborhood], "x, y coordinates do not have landmarks"
         landmarks = [[[] for _ in range(4)] for _ in range(4)]
         label_index = None
         k = 0
         for coord in self.idx_to_coord[neighborhood]:
-            normalized_coord = coord[0]-min_x, coord[1]-min_y
-            if x == coord[0] and y == coord[1]:
+            normalized_coord = coord[0]-boundaries[0], coord[1]-boundaries[1]
+            if target_loc[0] == coord[0] and target_loc[1] == coord[1]:
                 label_index = normalized_coord
                 landmarks[normalized_coord[0]][normalized_coord[1]].extend([self.stoi[l_type] + 1 for l_type in self.landmarks[neighborhood][coord]])
                 k += 1
             else:
-                if min_x <= coord[0] < min_x + 4 and min_y <= coord[1] < min_y + 4:
-                    # if all([t not in self.landmarks[neighborhood][(x, y)] for t in self.landmarks[neighborhood][coord]]):
-                    if True:
-                        landmarks[normalized_coord[0]][normalized_coord[1]].extend([self.stoi[l_type] + 1 for l_type in self.landmarks[neighborhood][coord]])
-                        k += 1
+                if boundaries[0] <= coord[0] <= boundaries[2] and boundaries[1] <= coord[1] <= boundaries[3]:
+                    landmarks[normalized_coord[0]][normalized_coord[1]].extend([self.stoi[l_type] + 1 for l_type in self.landmarks[neighborhood][coord]])
+                    k += 1
 
         assert label_index is not None
 
@@ -195,14 +193,24 @@ def create_obs_dict(textfeatures, neighborhoods):
 
 class GoldstandardFeatures:
 
-    def __init__(self, landmark_map):
+    def __init__(self, landmark_map, orientation_aware=False):
         self.landmark_map = landmark_map
+        self.allowed_orientations = {'NW': [3, 0], 'SW': [2, 3], 'NE': [0, 1], 'SE': [1, 2]}
+        self.mod2orientation = {(0, 0): 'SW', (1, 0): 'SE', (0, 1): 'NW', (1, 1): 'NE'}
+        self.orientation_aware = orientation_aware
 
-    def get(self, neighborhood, x, y):
-        obs = list()
-        if (x, y) in self.landmark_map.landmarks[neighborhood]:
-            obs.extend([self.landmark_map.stoi[t] + 1 for t in self.landmark_map.landmarks[neighborhood][(x, y)]])
-        return obs
+    def get(self, neighborhood, loc):
+        if self.orientation_aware:
+            mod = (loc[0]%2, loc[1]%2)
+            orientation = self.mod2orientation[mod]
+            if loc[2] in self.allowed_orientations[orientation]:
+                return [self.landmark_map.stoi[t] + 1 for t in
+                        self.landmark_map.landmarks[neighborhood][tuple(loc[:2])]]
+            else:
+                return [11]
+        else:
+            return [self.landmark_map.stoi[t] + 1 for t in self.landmark_map.landmarks[neighborhood][tuple(loc[:2])]]
+
 
 class TextrecogFeatures:
 
@@ -277,6 +285,40 @@ class ResnetFeatures:
         return obs
 
 
+def step_agnostic(action, loc, boundaries):
+    new_loc = copy.deepcopy(loc)
+    step = [(0, 1), (0, -1), (1, 0), (-1, 0)][action]
+    new_loc[0] = min(max(loc[0] + step[0], boundaries[0]), boundaries[2])
+    new_loc[1] = min(max(loc[1] + step[1], boundaries[1]), boundaries[3])
+    return new_loc
+
+def step_aware(action, loc, boundaries):
+    orientations = ['N', 'E', 'S', 'W']
+    steps = dict()
+    steps['N'] = [0, 1]
+    steps['E'] = [1, 0]
+    steps['S'] = [0, -1]
+    steps['W'] = [-1, 0]
+
+    new_loc = copy.deepcopy(loc)
+    if action == 0:
+        # turn left
+        new_loc[2] = (new_loc[2] - 1) % 4
+
+    if action  == 1:
+        # turn right
+        new_loc[2] = (new_loc[2] + 1) % 4
+
+    if action == 2:
+        # move forward
+        orientation = orientations[loc[2]]
+        new_loc[0] = new_loc[0] + steps[orientation][0]
+        new_loc[1] = new_loc[1] + steps[orientation][1]
+
+        new_loc[0] = min(max(new_loc[0], boundaries[0]), boundaries[2])
+        new_loc[1] = min(max(new_loc[1], boundaries[1]), boundaries[3])
+    return new_loc
+
 def load_data_multiple_step(configurations, feature_loaders, landmark_map, softmax='location', num_steps=2, samples_per_configuration=None):
     X_data, action_data, landmark_data, y_data = {k: list() for k in feature_loaders.keys()}, list(), list(), list()
 
@@ -285,46 +327,37 @@ def load_data_multiple_step(configurations, feature_loaders, landmark_map, softm
 
     # all_possible_actions = [[random.randint(0, 3) for _ in range(num_steps-1)]]
 
-
     for config in configurations:
         for a in all_possible_actions:
             neighborhood = config['neighborhood']
-            x, y = config['target_location'][:2]
-            min_x, min_y = config['boundaries'][:2]
+            target_loc = config['target_location']
+            boundaries = config['boundaries']
 
             obs = {k: list() for k in feature_loaders.keys()}
             actions = list()
-            sampled_x, sampled_y = x, y
+            loc = copy.deepcopy(config['target_location'])
             for p in range(num_steps):
                 for k, feature_loader in feature_loaders.items():
-                    obs[k].append(feature_loader.get(neighborhood, sampled_x, sampled_y))
+                    obs[k].append(feature_loader.get(neighborhood, loc))
 
                 if p != num_steps - 1:
                     sampled_act = a[p]
                     actions.append(sampled_act)
-                    step = [(0, 1), (0, -1), (1, 0), (-1, 0)][sampled_act]
-                    sampled_x = max(min(sampled_x + step[0], min_x+3), min_x)
-                    sampled_y = max(min(sampled_y + step[1], min_y+3), min_y)
+                    loc = step_agnostic(sampled_act, loc, boundaries)
 
             if num_steps == 1:
                 actions.append(0)
-            # pred_upbound_act += prediction_upperbound(obs['goldstandard'], landmark_map, neighborhood, min_x, min_y, sampled_x, sampled_y,
-            #                                       actions=actions)
-            # pred_upbound += prediction_upperbound(obs['goldstandard'], landmark_map, neighborhood, min_x, min_y,
-            #                                           sampled_x, sampled_y)
 
-            if landmark_map.has_landmarks(neighborhood, x, y):
-                for k in feature_loaders.keys():
-                    X_data[k].append(obs[k])
-                action_data.append(actions)
-                if softmax == 'location':
-                    landmarks, label_index = landmark_map.get_softmax_idx(neighborhood, min_x, min_y, x, y)
-                else:
-                    landmarks, label_index = landmark_map.get_landmarks_2d(neighborhood, min_x, min_y, x, y)
-                landmark_data.append(landmarks)
-                y_data.append(label_index)
+            for k in feature_loaders.keys():
+                X_data[k].append(obs[k])
 
-    # print(pred_upbound/len(configurations), pred_upbound_act/len(configurations))
+            action_data.append(actions)
+            if softmax == 'location':
+                landmarks, label_index = landmark_map.get_softmax_idx(neighborhood, boundaries, target_loc)
+            else:
+                landmarks, label_index = landmark_map.get_landmarks_2d(neighborhood, boundaries, target_loc)
+            landmark_data.append(landmarks)
+            y_data.append(label_index)
 
     return X_data, action_data, landmark_data, y_data
 

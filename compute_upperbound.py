@@ -1,99 +1,100 @@
 import copy
 import os
 import json
+import random
 import itertools
-from data_loader import load_data_multiple_step, Landmarks, load_features, GoldstandardFeatures
+from data_loader import Landmarks, GoldstandardFeatures, step_agnostic, step_aware
 
-def prediction_upperbound(seq_of_landmarks, landmark_map, neighborhood, min_x, min_y, x, y, actions=None):
+
+def init_paths_agnostic(neighborhood, boundaries, goldstandard_features):
+    paths = list()
+    for i in range(4):
+        for j in range(4):
+            path = dict()
+            path['loc'] = [boundaries[0] + i, boundaries[1] + j, 0]
+            path['seq_of_landmarks'] = [goldstandard_features.get(neighborhood, path['loc'])]
+            paths.append(path)
+    return paths
+
+def init_paths_aware(neighborhood, boundaries, goldstandard_features):
+    paths = list()
+    for i in range(4):
+        for j in range(4):
+            for k in range(4):
+                path = dict()
+                path['loc'] = [boundaries[0] + i, boundaries[1] + j, k]
+                path['seq_of_landmarks'] = [goldstandard_features.get(neighborhood, path['loc'])]
+                paths.append(path)
+    return paths
+
+def prediction_upperbound(seq_of_landmarks, goldstandard_features, neighborhood, boundaries, loc, actions=None, num_actions=4, step_fn=step_agnostic):
     depth = len(seq_of_landmarks)
 
     if actions is not None:
         assert len(actions) == depth - 1
 
-    paths = list()
+    if num_actions == 4:
+        paths = init_paths_agnostic(neighborhood, boundaries, goldstandard_features)
+    else:
+        paths = init_paths_aware(neighborhood, boundaries, goldstandard_features)
+
     for i in range(4):
         for j in range(4):
             path = dict()
-            path['x'] = min_x + i
-            path['y'] = min_y + j
-
-            path['seq_of_landmarks'] = [[landmark_map.stoi[t] + 1 for t in landmark_map.landmarks[neighborhood][(path['x'], path['y'])]]]
+            path['loc'] = [boundaries[0] + i, boundaries[1] + j, 0]
+            path['seq_of_landmarks'] = [goldstandard_features.get(neighborhood, path['loc'])]
             paths.append(path)
-
 
     for d in range(depth-1):
         new_paths = list()
         for path in paths:
-            if actions is None or actions[d] == 0:
-                path_N = copy.deepcopy(path)
-                path_N['x'] = path['x']
-                path_N['y'] = min(path['y'] + 1, min_y + 3)
-                path_N['seq_of_landmarks'].append(
-                    [landmark_map.stoi[t] + 1 for t in landmark_map.landmarks[neighborhood][(path_N['x'], path_N['y'])]])
-                new_paths.append(path_N)
-
-            if actions is None or actions[d] == 1:
-                path_S = copy.deepcopy(path)
-                path_S['x'] = path['x']
-                path_S['y'] = max(path['y'] - 1, min_y)
-                path_S['seq_of_landmarks'].append(
-                    [landmark_map.stoi[t] + 1 for t in landmark_map.landmarks[neighborhood][(path_S['x'], path_S['y'])]])
-                new_paths.append(path_S)
-
-            if actions is None or actions[d] == 2:
-                path_E = copy.deepcopy(path)
-                path_E['x'] = min(path['x'] + 1, min_x + 3)
-                path_E['y'] = path['y']
-                path_E['seq_of_landmarks'].append(
-                    [landmark_map.stoi[t] + 1 for t in landmark_map.landmarks[neighborhood][(path_E['x'], path_E['y'])]])
-                new_paths.append(path_E)
-
-            if actions is None or actions[d] == 3:
-                path_W = copy.deepcopy(path)
-                path_W['x'] = max(path['x'] - 1, min_x)
-                path_W['y'] = path['y']
-                path_W['seq_of_landmarks'].append(
-                    [landmark_map.stoi[t] + 1 for t in landmark_map.landmarks[neighborhood][(path_W['x'], path_W['y'])]])
-                new_paths.append(path_W)
+            for act_index in range(num_actions):
+                if actions is None or actions[d] == act_index:
+                    path_new = copy.deepcopy(path)
+                    path_new['loc'] = step_fn(act_index, path['loc'], boundaries)
+                    path_new['seq_of_landmarks'].append(goldstandard_features.get(neighborhood, path_new['loc']))
+                    new_paths.append(path_new)
         paths = new_paths
 
     correct, total = 0.0, 0.0
     for path in paths:
         if all([l1 == l2 for l1, l2 in zip(path['seq_of_landmarks'], seq_of_landmarks)]):
-            if path['x'] == x and path['y'] == y:
+            if path['loc'][0] == loc[0] and path['loc'][1] == loc[1]:
                 correct += 1
             total += 1
     return correct/total
 
-def process(configs, feature_loaders, landmark_map, num_steps):
+
+def process(configs, feature_loaders, num_steps, step_fn, num_actions=4):
     correct, cnt = 0, 0
 
     all_possible_actions = [[]]
     if num_steps > 1:
-        action_set = [[0, 1, 2, 3]] * (num_steps - 1)
+        actions = [i for i in range(num_actions)]
+        action_set = [actions] * (num_steps - 1)
         all_possible_actions = list(itertools.product(*action_set))
 
     for config in configs:
         for a in all_possible_actions:
             neighborhood = config['neighborhood']
-            x, y = config['target_location'][:2]
-            min_x, min_y = config['boundaries'][:2]
+            target_loc = config['target_location']
+            boundaries = config['boundaries']
 
             obs = {k: list() for k in feature_loaders.keys()}
             actions = list()
-            sampled_x, sampled_y = x, y
+            loc = copy.deepcopy(config['target_location'])
+            loc[2] = random.randint(0, 3)
             for p in range(num_steps):
                 for k, feature_loader in feature_loaders.items():
-                    obs[k].append(feature_loader.get(neighborhood, sampled_x, sampled_y))
+                    obs[k].append(feature_loader.get(neighborhood, loc))
 
                 if p != num_steps - 1:
                     sampled_act = a[p]
                     actions.append(sampled_act)
-                    step = [(0, 1), (0, -1), (1, 0), (-1, 0)][sampled_act]
-                    sampled_x = max(min(sampled_x + step[0], min_x + 3), min_x)
-                    sampled_y = max(min(sampled_y + step[1], min_y + 3), min_y)
+                    loc = step_fn(sampled_act, loc, boundaries)
 
-            correct += prediction_upperbound(obs['goldstandard'], landmark_map, neighborhood, min_x, min_y, sampled_x, sampled_y)
+            correct += prediction_upperbound(obs['goldstandard'], feature_loaders['goldstandard'],
+                                             neighborhood, boundaries, loc, step_fn=step_fn, num_actions=num_actions)
             cnt += 1
 
     return correct/cnt
@@ -108,12 +109,20 @@ if __name__ == '__main__':
     neighborhoods = ['fidi', 'hellskitchen', 'williamsburg', 'uppereast', 'eastvillage']
     landmark_map = Landmarks(neighborhoods, include_empty_corners=True)
 
+    orientation_aware = False
+    if orientation_aware:
+        step_fn = step_aware
+        num_actions = 3
+    else:
+        step_fn = step_agnostic
+        num_actions = 4
+
     feature_loaders = dict()
-    feature_loaders['goldstandard'] = GoldstandardFeatures(landmark_map)
+    feature_loaders['goldstandard'] = GoldstandardFeatures(landmark_map, orientation_aware=orientation_aware)
 
     for step in range(1, 5):
-        train_upp = process(train_configs, feature_loaders, landmark_map, step)
-        valid_upp = process(valid_configs, feature_loaders, landmark_map, step)
-        test_upp = process(test_configs, feature_loaders, landmark_map, step)
+        train_upp = process(train_configs, feature_loaders, step, step_fn, num_actions)
+        valid_upp = process(valid_configs, feature_loaders, step, step_fn, num_actions)
+        test_upp = process(test_configs, feature_loaders, step, step_fn, num_actions)
 
         print("%.2f, %.2f, %.2f" % (train_upp*100, valid_upp*100, test_upp*100))
