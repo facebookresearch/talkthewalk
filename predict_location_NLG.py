@@ -691,7 +691,7 @@ class TrainLanguageGenerator(object):
                 loss['loss'].backward()
                 self.optim.step()
                 if batch_num % 20 == 0:
-                    print('Batch: {}; batch loss: {}'.format(batch_num, loss))
+                    print('Batch: {}; batch loss: {}'.format(batch_num, loss['loss']))
             print('Epoch: {}, Loss: {}'.format(epoch_num, total_loss/(total*self.bsz)))
             valid_loss = self.eval_epoch()
             if valid_loss < best_valid:
