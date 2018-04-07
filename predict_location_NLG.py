@@ -711,7 +711,7 @@ class TrainLanguageGenerator(object):
     def eval_epoch(self):
         Xs, tourist_locs, landmarks, ys = self.valid_data
         Xs, tourist_locs, ys = shuffle(Xs, tourist_locs, ys)
-        total_loss, total = 0.0, 0.0, 0.0
+        total_loss, total = 0.0, 0.0
         batch_num = 0
         for jj in range(0, len(Xs), self.bsz):
             batch_num += 1
