@@ -3,6 +3,12 @@ import os
 
 from nltk.tokenize import TweetTokenizer
 
+UNK_TOKEN = '__UNK__'
+START_TOKEN = '__START__'
+END_TOKEN = '__END__'
+PAD_TOKEN = '__PAD__'
+SPECIALS = [UNK_TOKEN, START_TOKEN, END_TOKEN, PAD_TOKEN]
+
 class Dictionary:
 
     def __init__(self, file=None, min_freq=0):
@@ -10,7 +16,7 @@ class Dictionary:
         self.tok2i = dict()
         self.tok2cnt = dict()
 
-        for tok in ['__UNK__', '__START__', '__END__']:
+        for tok in ['__UNK__', '__START__', '__END__', '__PAD__']:
             self.tok2i[tok] = len(self.tok2i)
             self.i2tok.append(tok)
             self.tok2cnt[tok] = 100000000
@@ -34,6 +40,10 @@ class Dictionary:
 
     def encode(self, msg):
         return [self[tok] for tok in self.tokenizer.tokenize(msg)]
+
+    def decode(self, toks):
+        res = [self.i2tok[i] for i in toks if self.i2tok[i] not in SPECIALS]
+        return ' '.join(res)
 
     def add(self, msg):
         for tok in self.tokenizer.tokenize(msg):
