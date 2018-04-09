@@ -4,7 +4,7 @@ import json
 import torch
 import torch.optim as optim
 from collections import deque
-
+import time
 from sklearn.utils import shuffle
 from torch.autograd import Variable
 from data_loader import Landmarks, step_aware, load_features, \
@@ -46,6 +46,8 @@ class TrainLanguageGenerator(object):
     """class for training the language generator. Provides a trainloop"""
     def setup_args(self):
         parser = argparse.ArgumentParser()
+        parser.add_argument('--log-time', type=float, default=2.,
+                             help='how often to log training')
         parser.add_argument('--cuda', action='store_true')
         parser.add_argument('--valid_patience', type=int, default=5)
         parser.add_argument('-mf', '--model-file', type=str, default='my_model')
@@ -104,6 +106,7 @@ class TrainLanguageGenerator(object):
         self.valid_patience = args.valid_patience
         self.model_file = args.model_file
         self.contextlen = args.contextlen if args.contextlen >= 0 else None
+        self.log_time = args.log_time
 
         self.neighborhoods = ['fidi', 'hellskitchen', 'williamsburg',
                               'uppereast', 'eastvillage']
@@ -145,7 +148,10 @@ class TrainLanguageGenerator(object):
                              ctx_dim=0,
                              use_prev_word=self.use_prev_word,
                              use_dec_state=True,
-                             max_length=self.max_len)
+                             max_length=self.max_len,
+                             cuda=self.use_cuda)
+        if self.use_cuda:
+            self.model.cuda()
         self.optim = optim.Adam(self.model.parameters())
 
     def load_datasets(self):
@@ -276,6 +282,8 @@ class TrainLanguageGenerator(object):
         train_loss, train_acc = None, None
         best_valid = float('inf')
         valid_patience = 0
+
+        to_log = time.time()
         for epoch_num in range(self.num_epochs):
             Xs, tourist_locs, ys = shuffle(Xs, tourist_locs, ys)
             total_loss, accs, total = 0.0, 0.0, 0.0
@@ -298,8 +306,9 @@ class TrainLanguageGenerator(object):
                 self.optim.zero_grad()
                 loss['loss'].backward()
                 self.optim.step()
-                if batch_num % 20 == 0:
+                if to_log >= self.log_time:
                     print('Batch: {}; batch loss: {}'.format(batch_num, loss['loss']))
+                    to_log = time.time()
             print('Epoch: {}, Loss: {}'.format(epoch_num, total_loss/(total*self.bsz)))
             valid_loss = self.eval_epoch()
             if valid_loss < best_valid:

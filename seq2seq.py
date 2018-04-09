@@ -121,19 +121,27 @@ class Encoder(nn.Module):
         bsz = len(x)
         emb_size = len(x[0])
         emb_x = torch.FloatTensor(bsz, emb_size, self.emb_dim).zero_()
+        if self.use_cuda:
+            emb_x = emb_x.cuda()
         for i in range(bsz):
             ex = x[i]
             for j in range(len(ex)):
                 a_or_o = ex[j]
                 if type(a_or_o) is list:  # list of observations
                     emb = torch.Tensor(self.emb_dim).zero_()
+                    if self.use_cuda:
+                        emb = emb.cuda()
                     for obs in a_or_o:
                         # obs = Variable(torch.LongTensor([obs]))
                         obs = torch.LongTensor([obs])
+                        if self.use_cuda:
+                            obs = obs.cuda()
                         emb += self.observation_embedding(obs).view(-1)
                 else:  # action
                     act = Variable(torch.LongTensor([a_or_o]))
-                    emb = self.action_embedding(act).data
+                    if self.use_cuda:
+                        act = act.cuda()
+                    emb = self.action_embedding(act)
                 emb_x[i, j] = emb
         return emb_x
 
@@ -284,7 +292,6 @@ class Decoder(nn.Module):
         # mask everything after </s> was generated
         mask = Variable(torch.ones([bsz, 1]).byte())
         mask = mask.cuda() if self.use_cuda else mask
-
         for i in range(max_length):
             masks.append(mask)
             if self.use_attention:
@@ -450,6 +457,9 @@ class Seq2Seq(nn.Module):
 
         # input_mask = (src_var != self.src_pad_idx)
         input_mask = self.compute_input_mask(src_var)
+        if self.use_cuda:
+            input_mask = input_mask.cuda()
+
         encoder_outputs,\
             encoder_final,\
             embedded = self.encoder(src_var, src_lengths)
