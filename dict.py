@@ -38,8 +38,9 @@ class Dictionary:
     def __getitem__(self, tok):
         return self.tok2i.get(tok, self.tok2i['__UNK__'])
 
-    def encode(self, msg):
-        return [self[tok] for tok in self.tokenizer.tokenize(msg)]
+    def encode(self, msg, include_end=False):
+        ret = [self[tok] for tok in self.tokenizer.tokenize(msg)]
+        return ret + [self[END_TOKEN]] if include_end else ret
 
     def decode(self, toks):
         res = [self.i2tok[i] for i in toks if self.i2tok[i] not in SPECIALS]
