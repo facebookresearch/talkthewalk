@@ -319,8 +319,6 @@ class Decoder(nn.Module):
             # predict from (top) RNN hidden state directly
             to_predict = hidden[0][-1] if isinstance(hidden, tuple) else hidden[-1]  # [B, V]
             context = context if self.attn_type == 'Bahdanau' else output
-            import pdb; pdb.set_trace()
-
             if return_states:
                 decoder_states.append(to_predict.unsqueeze(0))
             if self.use_prev_word and self.use_dec_state:
@@ -334,8 +332,7 @@ class Decoder(nn.Module):
             elif not self.use_prev_word and not self.use_dec_state:
                 to_predict = context
             to_predict = self.pre_output_layer(to_predict)       # (B, 1, D)
-            logits = self.output_layer(to_predict.unsqueeze(1))  # (B, 1, V)
-
+            logits = self.output_layer(to_predict)  # (B, 1, V)
             log_probs = F.log_softmax(logits, 2)
             all_log_probs.append(log_probs)
             predictions = log_probs.max(2)[1]  # [B, 1]
