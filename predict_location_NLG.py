@@ -25,7 +25,7 @@ def get_action(msg):
                   'ACTION:FORWARD': 3}
     return msg_to_act.get(msg, None)
 
-def to_variable(obj, cuda=True):
+def to_variable(obj, cuda=False):
     if torch.is_tensor(obj):
         var = Variable(obj)
         if cuda:
@@ -41,7 +41,7 @@ class Encoder(nn.Module):
 
     def __init__(self, n_lands=9, n_acts=3, hidden_size=128, emb_dim=32,
                  n_layers=1, dropout=0.,
-                 bidirectional=False, vocab=None, rnn_type='LSTM'):
+                 bidirectional=False, vocab=None, rnn_type='LSTM', cuda=False):
 
         super(Encoder, self).__init__()
         self.hidden_size = hidden_size
@@ -53,6 +53,7 @@ class Encoder(nn.Module):
         self.start_idx = vocab.tok2i[START_TOKEN]
         self.end_idx = vocab.tok2i[END_TOKEN]
         self.n_acts = n_acts
+        self.use_cuda = torch.cuda.is_available() and cuda
 
         self.action_embedding = nn.Embedding(n_acts + 2, emb_dim)
         self.observation_embedding = nn.Embedding(n_lands + 2, emb_dim)
@@ -127,7 +128,7 @@ class Decoder(nn.Module):
                  encoder_is_bidirectional=True, enc_hidden_size=128,
                  pass_hidden_state=False, vocab=None, rnn_type='LSTM',
                  ctx_dim=0, use_prev_word=True, use_dec_state=True,
-                 max_length=0):
+                 max_length=0, cuda=False):
 
         super(Decoder, self).__init__()
 
@@ -140,7 +141,7 @@ class Decoder(nn.Module):
         self.dropout = dropout
         self.use_prev_word = use_prev_word
         self.use_dec_state = use_dec_state
-        self.use_cuda = torch.cuda.is_available()
+        self.use_cuda = torch.cuda.is_available() and cuda
         self.pass_hidden_state = pass_hidden_state
         self.use_attention = use_attention
         self.rnn_type = rnn_type
@@ -337,6 +338,7 @@ class Seq2Seq(nn.Module):
                  pass_hidden_state=True, vocab_src=None, vocab_trg=None,
                  rnn_type=None,
                  ctx_dim=0, use_prev_word=True, use_dec_state=True, max_length=0,
+                 cuda=False,
                  **kwargs):
 
         super(Seq2Seq, self).__init__()
@@ -344,6 +346,7 @@ class Seq2Seq(nn.Module):
         self.n_dec_layers = n_dec_layers
         self.hidden_size = hidden_size
         self.emb_dim = emb_dim
+        self.use_cuda = torch.cuda.is_available() and cuda
 
         self.n_landmarks = n_lands
         self.n_acts = n_acts
@@ -371,12 +374,12 @@ class Seq2Seq(nn.Module):
 
         self.encoder = Encoder(n_lands, n_acts, hidden_size, emb_dim,
                                n_enc_layers, dropout, bidirectional, vocab_src,
-                               rnn_type)
+                               rnn_type, self.use_cuda)
         self.decoder = Decoder(hidden_size, emb_dim, n_words_trg, n_dec_layers,
                                dropout, use_attention, bidirectional,
                                hidden_size, pass_hidden_state, vocab_trg,
                                rnn_type, ctx_dim, use_prev_word,
-                               use_dec_state, max_length)
+                               use_dec_state, max_length, self.use_cuda)
 
 
     def forward(self, src_var=None, src_lengths=None, trg_var=None,
@@ -454,7 +457,7 @@ class TrainLanguageGenerator(object):
         self.n_enc_layers = args.n_enc_layers
         self.n_dec_layers = args.n_dec_layers
         self.dropout = args.dropout
-        self.use_cuda = torch.cuda.is_available()
+        self.use_cuda = torch.cuda.is_available() and args.cuda
         self.valid_patience = args.valid_patience
         self.model_file = args.model_file
 
@@ -532,7 +535,8 @@ class TrainLanguageGenerator(object):
                             attention=False,
                             pass_hidden_state=True,
                             use_dec_state=True,
-                            use_prev_word=True)
+                            use_prev_word=True,
+                            cuda=False)
         self.args = parser.parse_args()
 
     def load_datasets(self):
@@ -703,6 +707,9 @@ class TrainLanguageGenerator(object):
                 print("BEST VALID STILL GOOD AFTER {} EPOCHS".format(valid_patience))
                 if valid_patience == self.valid_patience:
                     print("Finished training; saving model to {}".format(self.model_file))
+                    torch.save(self.model.state_dict(), self.model_file)
+                    return
+
             # train_loss = loss/total
             # train_acc = accs/total
             # print(train_loss)
@@ -765,6 +772,6 @@ if __name__ == '__main__':
 
     """
     trainer = TrainLanguageGenerator()
-    trainer.train()
-    # trainer.load_model('temp_model')
-    # trainer.test_predict()
+    # trainer.train()
+    trainer.load_model('no_attention')
+    trainer.test_predict()
