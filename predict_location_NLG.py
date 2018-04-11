@@ -12,11 +12,13 @@ from data_loader import Landmarks, step_aware, load_features, \
 from dict import Dictionary, START_TOKEN, END_TOKEN, UNK_TOKEN, PAD_TOKEN
 from seq2seq import Seq2Seq
 
+
 def get_action(msg):
     msg_to_act = {'ACTION:TURNLEFT': 1,
                   'ACTION:TURNRIGHT': 2,
                   'ACTION:FORWARD': 3}
     return msg_to_act.get(msg, None)
+
 
 def to_variable(obj, cuda=False):
     if torch.is_tensor(obj):
@@ -28,6 +30,7 @@ def to_variable(obj, cuda=False):
         return [to_variable(x, cuda=cuda) for x in obj]
     if isinstance(obj, dict):
         return {k: to_variable(v, cuda=cuda) for k, v in obj.items()}
+
 
 class ActionObservationDictionary(object):
     """Just has the pad, end, and start indices for action/obs sequence"""
@@ -47,7 +50,7 @@ class TrainLanguageGenerator(object):
     def setup_args(self):
         parser = argparse.ArgumentParser()
         parser.add_argument('--log-time', type=float, default=2.,
-                             help='how often to log training')
+                            help='how often to log training')
         parser.add_argument('--cuda', action='store_true')
         parser.add_argument('--valid_patience', type=int, default=5)
         parser.add_argument('-mf', '--model-file', type=str, default='my_model')
@@ -59,10 +62,11 @@ class TrainLanguageGenerator(object):
         parser.add_argument('--num-steps', type=int, default=-1)
         parser.add_argument('--softmax', choices=['landmarks', 'location'],
                             default='landmarks')
-        parser.add_argument('--emb-sz', type=int, default=32)
+        parser.add_argument('--enc-emb-sz', type=int, default=32)
+        parser.add_argument('--dec-emb-sz', type=int, default=128)
         parser.add_argument('--hsz', type=int, default=128)
         parser.add_argument('--num-epochs', type=int, default=500)
-        parser.add_argument('--batch_sz', type=int, default=64)
+        parser.add_argument('--bsz', type=int, default=64)
         parser.add_argument('--exp-name', type=str, default='test')
         parser.add_argument('--contextlen', type=int, default=-1)
         parser.add_argument('--dropout', type=float, default=0.1)
@@ -72,8 +76,10 @@ class TrainLanguageGenerator(object):
         parser.add_argument('--use-dec-state', action='store_true')
         parser.add_argument('--rnn-type', type=str, default='LSTM')
         parser.add_argument('--use-prev-word', action='store_true')
-        parser.add_argument('--n-enc-layers', type=int, default=1)
-        parser.add_argument('--n-dec-layers', type=int, default=1)
+        parser.add_argument('--n-enc-layers', type=int, default=2)
+        parser.add_argument('--n-dec-layers', type=int, default=2)
+        parser.add_argument('--learingrate', type=float, default=1.0)
+
 
         parser.set_defaults(data_dir='data/',
                             goldstandard_features=True,
@@ -88,10 +94,11 @@ class TrainLanguageGenerator(object):
         self.setup_args()
         args = self.args
         self.data_dir = args.data_dir
-        self.emb_sz = args.emb_sz
+        self.enc_emb_sz = args.enc_emb_sz
+        self.dec_emb_sz = args.dec_emb_sz
         self.hsz = args.hsz
         self.num_epochs = args.num_epochs
-        self.bsz = args.batch_sz
+        self.bsz = args.bsz
         self.contextlen = args.num_steps
         self.bidirectional = args.bidirectional
         self.attention = args.attention
@@ -134,7 +141,8 @@ class TrainLanguageGenerator(object):
                              n_acts=3,
                              n_words_trg=len(self.dictionary),
                              hidden_size=self.hsz,
-                             emb_dim=self.emb_sz,
+                             enc_emb_dim=self.enc_emb_sz,
+                             dec_emb_dim=self.dec_emb_sz,
                              n_enc_layers=self.n_enc_layers,
                              n_dec_layers=self.n_dec_layers,
                              dropout=self.dropout,
@@ -153,6 +161,7 @@ class TrainLanguageGenerator(object):
         if self.use_cuda:
             self.model.cuda()
         self.optim = optim.Adam(self.model.parameters())
+        self.lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optim, factor=0.5, patience=5, verbose=True)
 
     def load_datasets(self):
         dataset_names = ['train', 'valid', 'test']
@@ -234,14 +243,15 @@ class TrainLanguageGenerator(object):
     def create_batch(self, Xs, tourist_locs, ys):
         batch_size = len(Xs)
         seq_lens = [len(seq) for seq in Xs]
-        max_len = max(seq_lens)
-        X_batch = [[0 for _ in range(max_len)] for _ in range(batch_size)]
-        mask = torch.FloatTensor(batch_size, max_len).zero_()
+        y_lens = [len(y) for y in ys]
+        max_y_len = max(y_lens)
+        max_X_len = max(seq_lens)
+        X_batch = [[0 for _ in range(max_X_len)] for _ in range(batch_size)]
+        mask = torch.FloatTensor(batch_size, max_X_len).zero_()
         for i, seq in enumerate(Xs):
             for j, elem in enumerate(seq):
                 X_batch[i][j] = elem
             mask[i, :len(seq)] = 1.0
-        max_y_len = max(len(seq) for seq in ys)
         y_batch = torch.LongTensor(batch_size, max_y_len).fill_(self.dictionary[PAD_TOKEN])
         for i, seq in enumerate(ys):
             y_batch[i, :len(seq)] = torch.LongTensor(seq)
@@ -252,14 +262,16 @@ class TrainLanguageGenerator(object):
         sorted_seq_lens, sorted_indices = torch.sort(
             torch.LongTensor(seq_lens),
             descending=True)
-        sorted_X_batch = [[self.action_obs_dict.tok2i[PAD_TOKEN] for _ in range(max_len)] for _ in range(batch_size)]
+        sorted_X_batch = [[self.action_obs_dict.tok2i[PAD_TOKEN] for _ in range(max_X_len)] for _ in range(batch_size)]
         sorted_y_batch = torch.LongTensor(batch_size, max_y_len).zero_()
         sorted_tourist_loc_batch = torch.LongTensor(tourist_loc_batch.size())
-        sorted_mask = torch.FloatTensor(batch_size, max_len).zero_()
+        sorted_mask = torch.FloatTensor(batch_size, max_X_len).zero_()
+        sorted_y_lens = []
         i = 0
         for idx in sorted_indices:
             sorted_X_batch[i][:] = X_batch[idx][:]
             sorted_y_batch[i, :] = y_batch[idx][:]
+            sorted_y_lens.append(y_lens[i])
             sorted_tourist_loc_batch[i] = tourist_loc_batch[idx]
             sorted_mask[i, :sorted_seq_lens[i]] = 1.0
             i += 1
@@ -270,7 +282,8 @@ class TrainLanguageGenerator(object):
                              sorted_y_batch],
                             cuda=self.use_cuda),
                 sorted(seq_lens, reverse=True),
-                max_len)
+                sorted_y_lens,
+                max_y_len)
 
 
     def train(self, num_epochs=None):
@@ -294,12 +307,13 @@ class TrainLanguageGenerator(object):
                 data = self.create_batch(Xs[jj:jj + self.bsz],
                                          tourist_locs[jj:jj + self.bsz],
                                          ys[jj:jj + self.bsz])
-                X_batch, (mask, t_locs_batch, y_batch), X_lengths, max_len = data
+                X_batch, (mask, t_locs_batch, y_batch), X_lengths, y_lengths, max_len = data
                 res = self.model.forward(src_var=X_batch,
                                          src_lengths=X_lengths,
                                          trg_var=y_batch,
-                                         trg_lengths=None,
+                                         trg_lengths=y_lengths,
                                          max_length=max_len,
+                                         encoder_mask=mask,
                                          return_attention=True)
                 total += 1
                 loss = res['loss']
@@ -307,12 +321,13 @@ class TrainLanguageGenerator(object):
                 self.optim.zero_grad()
                 loss['loss'].backward()
                 self.optim.step()
-                if to_log >= self.log_time:
+                if time.time() - to_log >= self.log_time:
                     elapsed = time.time() - start
                     print('Elapsed_time: {}, Batch: {}/{}; batch loss: {:.2f}; '.format(int(elapsed), batch_num, int(len(Xs)/self.bsz), loss['loss']))
                     to_log = time.time()
             print('Epoch: {}, Loss: {}'.format(epoch_num, total_loss/total))
             valid_loss = self.eval_epoch()
+            self.lr_scheduler.step(valid_loss)
             if valid_loss < best_valid:
                 print('NEW BEST VALID: {}'.format(valid_loss))
                 best_valid = valid_loss
@@ -387,6 +402,6 @@ if __name__ == '__main__':
 
     """
     trainer = TrainLanguageGenerator()
-    # trainer.train()
+    trainer.train()
     trainer.load_model(trainer.model_file)
     trainer.test_predict()

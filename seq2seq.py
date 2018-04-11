@@ -7,6 +7,7 @@ from torch.nn.utils.rnn import pad_packed_sequence, pack_padded_sequence
 from torch.autograd import Variable
 from dict import START_TOKEN, END_TOKEN, UNK_TOKEN, PAD_TOKEN
 
+
 class BahdanauAttention(nn.Module):
     """
     Computes Bahdanau attention between a memory (e.g. encoder states)
@@ -150,7 +151,7 @@ class Decoder(nn.Module):
     """
         Decoder with attention
     """
-    def __init__(self, hidden_size=128, emb_dim=32, n_words=0, n_layers=1,
+    def __init__(self, hidden_size=128, emb_dim=128, n_words=0, n_layers=1,
                  dropout=0.1, attn_type='',
                  encoder_is_bidirectional=True, enc_hidden_size=128,
                  pass_hidden_state=False, vocab=None, rnn_type='LSTM',
@@ -276,7 +277,6 @@ class Decoder(nn.Module):
         if self.attn_type == 'Bahdanau':
             projected_memory = self.attention.project_memory(encoder_outputs)
             attention_values = encoder_outputs
-
         # start of sequence = embedding all 0s
         # embedded = Variable(torch.zeros((bsz, 1, self.emb_dim)))
         embedded = Variable(torch.Tensor(bsz, 1, self.emb_dim).fill_(self.vocab.tok2i[START_TOKEN]))
@@ -297,14 +297,14 @@ class Decoder(nn.Module):
             if self.use_attention:
                 if self.attn_type == 'Bahdanau':
                     query = hidden[0][-1] if isinstance(hidden, tuple) else hidden[-1]  # [B, D]
-                    query = query.unsqueeze(0)  # [1, B, 2D]
+                    query = query.unsqueeze(0)  # [1, B, D]
                     alpha = self.attention(query=query,
                                            projected_memory=projected_memory,
                                            mask=encoder_mask)  # (B, 1, T)
                     if return_attention:
                         all_attention_scores.append(alpha)
-                    context = alpha.bmm(attention_values)  # (B, 1, 2D)
-                    output = torch.cat((embedded, context), 2)
+                    context = alpha.bmm(attention_values)  # (B, 1, D)
+                    output = torch.cat((embedded, context), 2) # (B, 1, D+emb_dim)
                 else:
                     embedded = embedded.view(1, bsz, -1)
                     if self.rnn_type == 'LSTM':
@@ -381,7 +381,7 @@ class Decoder(nn.Module):
 class Seq2Seq(nn.Module):
     """Seq2Seq enc/dec (NO RL CURRENTLY)"""
     def __init__(self, n_lands=9, n_acts=3, n_words_trg=0, hidden_size=0,
-                 emb_dim=0,
+                 enc_emb_dim=0, dec_emb_dim=0,
                  n_enc_layers=1, n_dec_layers=1, dropout=0., word_dropout=0.,
                  bidirectional=False, attn_type='',
                  pass_hidden_state=True, vocab_src=None, vocab_trg=None,
@@ -394,7 +394,8 @@ class Seq2Seq(nn.Module):
         self.n_enc_layers = n_enc_layers
         self.n_dec_layers = n_dec_layers
         self.hidden_size = hidden_size
-        self.emb_dim = emb_dim
+        self.enc_emb_dim = enc_emb_dim
+        self.dec_emb_dim = dec_emb_dim
         self.use_cuda = torch.cuda.is_available() and cuda
 
         self.n_landmarks = n_lands
@@ -421,10 +422,10 @@ class Seq2Seq(nn.Module):
         self.criterion = nn.NLLLoss(reduce=False, size_average=False,
                                     ignore_index=self.trg_pad_idx)
 
-        self.encoder = Encoder(n_lands, n_acts, hidden_size, emb_dim,
+        self.encoder = Encoder(n_lands, n_acts, hidden_size, enc_emb_dim,
                                n_enc_layers, dropout, bidirectional, vocab_src,
                                rnn_type, self.use_cuda)
-        self.decoder = Decoder(hidden_size, emb_dim, n_words_trg, n_dec_layers,
+        self.decoder = Decoder(hidden_size, dec_emb_dim, n_words_trg, n_dec_layers,
                                dropout, attn_type, bidirectional,
                                hidden_size, pass_hidden_state, vocab_trg,
                                rnn_type, ctx_dim, use_prev_word,
@@ -438,7 +439,7 @@ class Seq2Seq(nn.Module):
         return mask
 
     def forward(self, src_var=None, src_lengths=None, trg_var=None,
-                trg_lengths=None, max_length=0,
+                trg_lengths=None, max_length=0, encoder_mask=None,
                 return_attention=False,):
         """
 
@@ -456,7 +457,9 @@ class Seq2Seq(nn.Module):
         trg_max_length = trg_var.size(1) if trg_var is not None else max_length
 
         # input_mask = (src_var != self.src_pad_idx)
-        input_mask = self.compute_input_mask(src_var)
+        input_mask = encoder_mask
+        if input_mask is None:
+            input_mask = self.compute_input_mask(src_var)
         if self.use_cuda:
             input_mask = input_mask.cuda()
 
