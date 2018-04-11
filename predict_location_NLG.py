@@ -284,6 +284,7 @@ class TrainLanguageGenerator(object):
         valid_patience = 0
 
         to_log = time.time()
+        start = time.time()
         for epoch_num in range(self.num_epochs):
             Xs, tourist_locs, ys = shuffle(Xs, tourist_locs, ys)
             total_loss, accs, total = 0.0, 0.0, 0.0
@@ -307,12 +308,13 @@ class TrainLanguageGenerator(object):
                 loss['loss'].backward()
                 self.optim.step()
                 if to_log >= self.log_time:
-                    print('Batch: {}; batch loss: {}'.format(batch_num, loss['loss']))
+                    elapsed = time.time() - start
+                    print('Elapsed_time: {}, Batch: {}/{}; batch loss: {:.2f}; '.format(int(elapsed), batch_num, int(len(Xs)/self.bsz), loss['loss']))
                     to_log = time.time()
-            print('Epoch: {}, Loss: {}'.format(epoch_num, total_loss/(total*self.bsz)))
+            print('Epoch: {}, Loss: {}'.format(epoch_num, total_loss/total))
             valid_loss = self.eval_epoch()
             if valid_loss < best_valid:
-                print('NEW BEST VALID:'.format(valid_loss))
+                print('NEW BEST VALID: {}'.format(valid_loss))
                 best_valid = valid_loss
                 valid_patience = 0
             else:
@@ -385,6 +387,6 @@ if __name__ == '__main__':
 
     """
     trainer = TrainLanguageGenerator()
-    trainer.train()
-    # trainer.load_model('no_attention')
-    # trainer.test_predict()
+    # trainer.train()
+    trainer.load_model(trainer.model_file)
+    trainer.test_predict()
