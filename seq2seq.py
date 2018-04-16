@@ -74,6 +74,7 @@ class Encoder(nn.Module):
         self.end_idx = vocab.tok2i[END_TOKEN]
         self.n_acts = n_acts
         self.use_cuda = torch.cuda.is_available() and cuda
+        self.n_layers = n_layers
 
         self.action_embedding = nn.Embedding(n_acts + n_lands + 4, emb_dim)
         self.observation_embedding = nn.Embedding(n_acts + n_lands + 4, emb_dim)
@@ -151,7 +152,7 @@ class Decoder(nn.Module):
     """
         Decoder with attention
     """
-    def __init__(self, hidden_size=128, emb_dim=128, n_words=0, n_layers=1,
+    def __init__(self, hidden_size=128, emb_dim=32, n_words=0, n_layers=1,
                  dropout=0.1, attn_type='',
                  encoder_is_bidirectional=True, enc_hidden_size=128,
                  pass_hidden_state=False, vocab=None, rnn_type='LSTM',
@@ -171,15 +172,17 @@ class Decoder(nn.Module):
         self.use_dec_state = use_dec_state
         self.use_cuda = torch.cuda.is_available() and cuda
         self.pass_hidden_state = pass_hidden_state
-        self.use_attention = attn_type != ''
+        self.use_attention = attn_type != 'none'
         self.attn_type = attn_type
         self.rnn_type = rnn_type
         self.n_layers = n_layers
+        if encoder_is_bidirectional:
+            enc_hidden_size *= 2
         if enc_hidden_size == 0:
             enc_hidden_size = hidden_size * 2 if encoder_is_bidirectional else hidden_size
         self.embedding = nn.Embedding(n_words, emb_dim)
-        rnn_dim = emb_dim if self.attn_type == '' else emb_dim + enc_hidden_size
-        if rnn_type == 'gru':
+        rnn_dim = emb_dim if not self.use_attention else emb_dim + enc_hidden_size
+        if rnn_type == 'GRU':
             self.rnn = nn.GRU(rnn_dim, hidden_size,
                               batch_first=True, dropout=dropout,
                               num_layers=n_layers)
@@ -273,7 +276,6 @@ class Decoder(nn.Module):
         """
 
         bsz = encoder_outputs.size(0)  # B
-
         if self.attn_type == 'Bahdanau':
             projected_memory = self.attention.project_memory(encoder_outputs)
             attention_values = encoder_outputs
@@ -282,7 +284,6 @@ class Decoder(nn.Module):
         embedded = Variable(torch.Tensor(bsz, 1, self.emb_dim).fill_(self.vocab.tok2i[START_TOKEN]))
         embedded = embedded.cuda() if self.use_cuda else embedded
         hidden = self.init_hidden(encoder_final)  # (n_layers, B, hsz)
-
         all_predictions = []
         all_log_probs = []
         all_attention_scores = []
@@ -292,6 +293,7 @@ class Decoder(nn.Module):
         # mask everything after </s> was generated
         mask = Variable(torch.ones([bsz, 1]).byte())
         mask = mask.cuda() if self.use_cuda else mask
+
         for i in range(max_length):
             masks.append(mask)
             if self.use_attention:
@@ -304,7 +306,7 @@ class Decoder(nn.Module):
                     if return_attention:
                         all_attention_scores.append(alpha)
                     context = alpha.bmm(attention_values)  # (B, 1, D)
-                    output = torch.cat((embedded, context), 2) # (B, 1, D+emb_dim)
+                    rnn_input = torch.cat((embedded, context), 2) # (B, 1, D+emb_dim)
                 else:
                     embedded = embedded.view(1, bsz, -1)
                     if self.rnn_type == 'LSTM':
@@ -318,24 +320,27 @@ class Decoder(nn.Module):
                     attn_applied = torch.bmm(attn_weights.unsqueeze(0), encoder_outputs.transpose(1, 2).squeeze(1))
                     output = torch.cat((embedded[0], attn_applied[0]), 1)
                     output = self.attn_combine(output).unsqueeze(0)
-                    output = F.relu(output)
+                    rnn_input = F.relu(output)
             else:
-                output = embedded
-            _, hidden = self.rnn(output, hidden)  # hidden (n_layers, B, hsz)
+                rnn_input = embedded
+            dec_out, hidden = self.rnn(rnn_input, hidden)  # hidden (n_layers, B, hsz)
 
             # predict from (top) RNN hidden state directly
-            to_predict = hidden[0][-1] if isinstance(hidden, tuple) else hidden[-1]  # [B, V]
-            context = context if self.attn_type == 'Bahdanau' else output
+            current_state = hidden[0][-1] if isinstance(hidden, tuple) else hidden[-1]  # [B, V]
+            # This was wrong: context = context if self.attn_type == 'Bahdanau' else dec_out
+            context = context if self.attn_type == 'Bahdanau' else dec_out
             if return_states:
-                decoder_states.append(to_predict.unsqueeze(0))
+                decoder_states.append(current_state.unsqueeze(0))
             if self.use_prev_word and self.use_dec_state:
                 to_predict = torch.cat(
-                                (to_predict.unsqueeze(1),
+                                (current_state.unsqueeze(1),
                                     embedded,
                                     context),
                                 2)
             elif self.use_prev_word and not self.use_dec_state:
                 to_predict = torch.cat((embedded, context), 2)
+            elif not self.use_prev_word and self.use_dec_state:
+                to_predict = torch.cat((current_state.unsqueeze(1), context), 2)
             elif not self.use_prev_word and not self.use_dec_state:
                 to_predict = context
             to_predict = self.pre_output_layer(to_predict)       # (B, 1, D)
@@ -370,7 +375,7 @@ class Decoder(nn.Module):
             all_attention_scores = None
 
         mask = torch.cat(masks, 1)
-
+        
         return {'preds': all_predictions,
                 'log_probs': all_log_probs,
                 'att_scores': all_attention_scores,
@@ -419,6 +424,8 @@ class Seq2Seq(nn.Module):
         self.trg_pad_idx = vocab_trg.tok2i[PAD_TOKEN]
         self.trg_unk_idx = vocab_trg.tok2i[UNK_TOKEN]
 
+        self.attn_type = attn_type
+
         self.criterion = nn.NLLLoss(reduce=False, size_average=False,
                                     ignore_index=self.trg_pad_idx)
 
@@ -426,7 +433,7 @@ class Seq2Seq(nn.Module):
                                n_enc_layers, dropout, bidirectional, vocab_src,
                                rnn_type, self.use_cuda)
         self.decoder = Decoder(hidden_size, dec_emb_dim, n_words_trg, n_dec_layers,
-                               dropout, attn_type, bidirectional,
+                               dropout, self.attn_type, bidirectional,
                                hidden_size, pass_hidden_state, vocab_trg,
                                rnn_type, ctx_dim, use_prev_word,
                                use_dec_state, max_length, self.use_cuda)
@@ -440,7 +447,7 @@ class Seq2Seq(nn.Module):
 
     def forward(self, src_var=None, src_lengths=None, trg_var=None,
                 trg_lengths=None, max_length=0, encoder_mask=None,
-                return_attention=False,):
+                return_attention=False, train=False):
         """
 
         Args:
@@ -466,10 +473,11 @@ class Seq2Seq(nn.Module):
         encoder_outputs,\
             encoder_final,\
             embedded = self.encoder(src_var, src_lengths)
+        decode_target = trg_var if train else None
         result = self.decoder(
             encoder_final=encoder_final, encoder_outputs=encoder_outputs,
             encoder_mask=input_mask, max_length=trg_max_length,
-            trg_var=trg_var, return_attention=return_attention,
+            trg_var=decode_target, return_attention=return_attention,
             )
         if trg_var is not None:
             result['loss'] = self.get_loss(result, trg_var)
@@ -477,7 +485,6 @@ class Seq2Seq(nn.Module):
         return result
 
     def get_loss(self, result=None, trg_var=None):
-
         # all masks are ByteTensors here; convert to float() when multiplying them with non-ByteTensors
         trg_mask = (trg_var != self.trg_pad_idx)
         mask = result['mask']  # this is false for items after </s> was predicted

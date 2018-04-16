@@ -12,6 +12,14 @@ from data_loader import Landmarks, step_aware, load_features, \
 from dict import Dictionary, START_TOKEN, END_TOKEN, UNK_TOKEN, PAD_TOKEN
 from seq2seq import Seq2Seq
 
+def str2bool(value):
+    v = value.lower()
+    if v in ('yes', 'true', 't', '1', 'y'):
+        return True
+    elif v in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
 
 def get_action(msg):
     msg_to_act = {'ACTION:TURNLEFT': 1,
@@ -49,77 +57,82 @@ class TrainLanguageGenerator(object):
     """class for training the language generator. Provides a trainloop"""
     def setup_args(self):
         parser = argparse.ArgumentParser()
+        parser.register('type', 'bool', str2bool)
         parser.add_argument('--log-time', type=float, default=2.,
                             help='how often to log training')
-        parser.add_argument('--cuda', action='store_true')
-        parser.add_argument('--valid_patience', type=int, default=5)
+        parser.add_argument('--cuda', type='bool', default=True)
+        parser.add_argument('--valid-patience', type=int, default=5)
         parser.add_argument('-mf', '--model-file', type=str, default='my_model')
         parser.add_argument('--resnet-features', action='store_true')
         parser.add_argument('--fasttext-features', action='store_true')
         parser.add_argument('--goldstandard-features', action='store_true')
-        parser.add_argument('--condition-on-action', action='store_true')
-        parser.add_argument('--mask-conv', action='store_true')
         parser.add_argument('--num-steps', type=int, default=-1)
-        parser.add_argument('--softmax', choices=['landmarks', 'location'],
-                            default='landmarks')
         parser.add_argument('--enc-emb-sz', type=int, default=32)
-        parser.add_argument('--dec-emb-sz', type=int, default=128)
+        parser.add_argument('--dec-emb-sz', type=int, default=32)
         parser.add_argument('--hsz', type=int, default=128)
         parser.add_argument('--num-epochs', type=int, default=500)
         parser.add_argument('--bsz', type=int, default=64)
         parser.add_argument('--exp-name', type=str, default='test')
-        parser.add_argument('--contextlen', type=int, default=-1)
         parser.add_argument('--dropout', type=float, default=0.1)
-        parser.add_argument('--bidirectional', action='store_true')
+        parser.add_argument('--bidirectional', type='bool', default=False)
         parser.add_argument('--attention', type=str, default='')
-        parser.add_argument('--pass-hidden-state', action='store_true')
-        parser.add_argument('--use-dec-state', action='store_true')
+        parser.add_argument('--pass-hidden-state', type='bool', default=True)
+        parser.add_argument('--use-dec-state',type='bool', default=True)
         parser.add_argument('--rnn-type', type=str, default='LSTM')
-        parser.add_argument('--use-prev-word', action='store_true')
-        parser.add_argument('--n-enc-layers', type=int, default=2)
-        parser.add_argument('--n-dec-layers', type=int, default=2)
-        parser.add_argument('--learingrate', type=float, default=1.0)
+        parser.add_argument('--use-prev-word', type='bool', default=True)
+        # parser.add_argument('--n-enc-layers', type=int, default=2)
+        # parser.add_argument('--n-dec-layers', type=int, default=2)
+        parser.add_argument('--n-layers', type=int, default=1)
+        parser.add_argument('--learningrate', type=float, default=1.0)
+        parser.add_argument('--dict-file', type=str, default='dict.txt')
+        parser.add_argument('--temp-build', type='bool', default=False)
 
 
         parser.set_defaults(data_dir='data/',
                             goldstandard_features=True,
-                            bidirectional=False,
-                            pass_hidden_state=True,
-                            use_dec_state=True,
-                            use_prev_word=True,
-                            cuda=False)
+                            # bidirectional=False,
+                            # pass_hidden_state=True,
+                            # use_dec_state=True,
+                            # use_prev_word=True,
+                            # cuda=False,
+                            )
         self.args = parser.parse_args()
 
-    def __init__(self):
-        self.setup_args()
-        args = self.args
+
+    def __init__(self, args=None):
+        if args is None:
+            self.setup_args()
+            args = self.args
+        else:
+            self.args = args
         self.data_dir = args.data_dir
         self.enc_emb_sz = args.enc_emb_sz
         self.dec_emb_sz = args.dec_emb_sz
         self.hsz = args.hsz
         self.num_epochs = args.num_epochs
         self.bsz = args.bsz
-        self.contextlen = args.num_steps
+        self.contextlen = args.num_steps if args.num_steps >= 0 else None
         self.bidirectional = args.bidirectional
         self.attention = args.attention
         self.pass_hidden_state = args.pass_hidden_state
         self.rnn_type = args.rnn_type
         self.use_prev_word = args.use_prev_word
         self.use_dec_state = args.use_dec_state
-        self.n_enc_layers = args.n_enc_layers
-        self.n_dec_layers = args.n_dec_layers
+        # self.n_enc_layers = args.n_enc_layers
+        # self.n_dec_layers = args.n_dec_layers
+        self.n_layers = args.n_layers
         self.dropout = args.dropout
         self.use_cuda = torch.cuda.is_available() and args.cuda
         self.valid_patience = args.valid_patience
         self.model_file = args.model_file
-        self.contextlen = args.contextlen if args.contextlen >= 0 else None
         self.log_time = args.log_time
+        self.learning_rate = args.learningrate
 
         self.neighborhoods = ['fidi', 'hellskitchen', 'williamsburg',
                               'uppereast', 'eastvillage']
         self.landmark_map = Landmarks(self.neighborhoods,
                                       include_empty_corners=True)
-        self.dictionary = Dictionary('./data/dict.txt', 3)
+        self.dictionary = Dictionary(self.data_dir+args.dict_file, 3)
         self.action_obs_dict = ActionObservationDictionary(self.landmark_map.itos, [1, 2, 3])
         print('Loading Datasets...')
         self.load_datasets()
@@ -127,15 +140,18 @@ class TrainLanguageGenerator(object):
         print('Building Train Data...')
         self.train_data = self.load_data(self.train_set,
                                          'train',
-                                         self.feature_loaders['goldstandard'])
+                                         self.feature_loaders['goldstandard'],
+                                         temp_build=args.temp_build)
         print('Building Valid Data...')
         self.valid_data = self.load_data(self.valid_set,
                                          'valid',
-                                         self.feature_loaders['goldstandard'])
+                                         self.feature_loaders['goldstandard'],
+                                         temp_build=args.temp_build)
         print('Building Test Data...')
         self.test_data = self.load_data(self.test_set,
                                         'test',
-                                        self.feature_loaders['goldstandard'])
+                                        self.feature_loaders['goldstandard'],
+                                        temp_build=args.temp_build)
         self.max_len = max([len(seq) for seq in self.train_data[0]])
         self.model = Seq2Seq(n_lands=11,
                              n_acts=3,
@@ -143,8 +159,8 @@ class TrainLanguageGenerator(object):
                              hidden_size=self.hsz,
                              enc_emb_dim=self.enc_emb_sz,
                              dec_emb_dim=self.dec_emb_sz,
-                             n_enc_layers=self.n_enc_layers,
-                             n_dec_layers=self.n_dec_layers,
+                             n_enc_layers=self.n_layers,
+                             n_dec_layers=self.n_layers,
                              dropout=self.dropout,
                              word_dropout=self.dropout,
                              bidirectional=self.bidirectional,
@@ -160,8 +176,8 @@ class TrainLanguageGenerator(object):
                              cuda=self.use_cuda)
         if self.use_cuda:
             self.model.cuda()
-        self.optim = optim.Adam(self.model.parameters())
-        self.lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optim, factor=0.5, patience=5, verbose=True)
+        self.optim = optim.Adam(self.model.parameters(), lr=self.learning_rate)
+        self.lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optim, factor=0.1, patience=3, verbose=True)
 
     def load_datasets(self):
         dataset_names = ['train', 'valid', 'test']
@@ -190,13 +206,13 @@ class TrainLanguageGenerator(object):
             self.feature_loaders['goldstandard'] = GoldstandardFeatures(
                                                             self.landmark_map)
 
-    def load_data(self, dataset, dataset_name, feature_loader):
+    def load_data(self, dataset, dataset_name, feature_loader, temp_build=False):
         Xs = []         # x_i = [a_1, o_1, a_2, ..., a_n, o_n] acts + obs
         tourist_locs = []
         landmarks = []
         ys = []         # y_i = msg from tourist
         dataset_path = os.path.join(self.data_dir, "{}_NLG_data/".format(dataset_name))
-        if os.path.exists(dataset_path):
+        if os.path.exists(dataset_path) and not temp_build:
             data = []
             for d in ['Xs', 'tourist_locs', 'landmarks', 'ys']:
                 with open(os.path.join(dataset_path, '{}.json'.format(d))) as f:
@@ -232,11 +248,13 @@ class TrainLanguageGenerator(object):
                                 landmarks.append(ls)
                                 obs_emb = feature_loader.get(neighborhood, loc)
                                 act_obs_memory.append(obs_emb)
-            os.makedirs(dataset_path)
+
             data = [Xs, tourist_locs, landmarks, ys]
-            for i, d in enumerate(['Xs', 'tourist_locs', 'landmarks', 'ys']):
-                with open(os.path.join(dataset_path, '{}.json'.format(d)), 'w') as f:
-                    json.dump(data[i], f)
+            if not temp_build:
+                os.makedirs(dataset_path)
+                for i, d in enumerate(['Xs', 'tourist_locs', 'landmarks', 'ys']):
+                    with open(os.path.join(dataset_path, '{}.json'.format(d)), 'w') as f:
+                        json.dump(data[i], f)
 
         return data
 
@@ -314,7 +332,8 @@ class TrainLanguageGenerator(object):
                                          trg_lengths=y_lengths,
                                          max_length=max_len,
                                          encoder_mask=mask,
-                                         return_attention=True)
+                                         return_attention=True,
+                                         train=True)
                 total += 1
                 loss = res['loss']
                 total_loss += loss['loss'].cpu().data.numpy()
@@ -325,6 +344,10 @@ class TrainLanguageGenerator(object):
                     elapsed = time.time() - start
                     print('Elapsed_time: {}, Batch: {}/{}; batch loss: {:.2f}; '.format(int(elapsed), batch_num, int(len(Xs)/self.bsz), loss['loss']))
                     to_log = time.time()
+                    pred = res['preds'][0, :]
+                    print('target: {}'.format(self.dictionary.decode(y_batch[0, :])))
+                    print('generate: {}'.format(self.dictionary.decode(pred)))
+                    print('\n')
             print('Epoch: {}, Loss: {}'.format(epoch_num, total_loss/total))
             valid_loss = self.eval_epoch()
             self.lr_scheduler.step(valid_loss)
@@ -337,9 +360,17 @@ class TrainLanguageGenerator(object):
                 print("BEST VALID STILL GOOD AFTER {} EPOCHS".format(valid_patience))
                 if valid_patience == self.valid_patience:
                     print("Finished training; saving model to {}".format(self.model_file))
-                    torch.save(self.model.state_dict(), self.model_file)
+                    self.save_model()
+                    test_loss = self.eval_test()
+                    print('Test Loss: {}'.format(test_loss))
                     return
 
+        print('Finished {} epochs; saving anyway...'.format(self.num_epochs))
+        self.save_model()
+        val_loss = self.eval_epoch()
+        print('Validation Loss: {}'.format(val_loss))
+        test_loss = self.eval_test()
+        print('Test Loss: {}'.format(test_loss))
             # train_loss = loss/total
             # train_acc = accs/total
             # print(train_loss)
@@ -355,7 +386,29 @@ class TrainLanguageGenerator(object):
             data = self.create_batch(Xs[jj:jj + self.bsz],
                                      tourist_locs[jj:jj + self.bsz],
                                      ys[jj:jj + self.bsz])
-            X_batch, (mask, t_locs_batch, y_batch), X_lengths, max_len = data
+            X_batch, (mask, t_locs_batch, y_batch), X_lengths, y_lengths, max_len = data
+            res = self.model.forward(src_var=X_batch,
+                                     src_lengths=X_lengths,
+                                     trg_var=y_batch,
+                                     trg_lengths=None,
+                                     max_length=max_len,
+                                     return_attention=True)
+            total += 1
+            loss = res['loss']
+            total_loss += loss['loss'].cpu().data.numpy()
+        return total_loss/total
+
+    def eval_test(self):
+        Xs, tourist_locs, landmarks, ys = self.test_data
+        Xs, tourist_locs, ys = shuffle(Xs, tourist_locs, ys)
+        total_loss, total = 0.0, 0.0
+        batch_num = 0
+        for jj in range(0, len(Xs), self.bsz):
+            batch_num += 1
+            data = self.create_batch(Xs[jj:jj + self.bsz],
+                                     tourist_locs[jj:jj + self.bsz],
+                                     ys[jj:jj + self.bsz])
+            X_batch, (mask, t_locs_batch, y_batch), X_lengths, y_lengths, max_len = data
             res = self.model.forward(src_var=X_batch,
                                      src_lengths=X_lengths,
                                      trg_var=y_batch,
@@ -373,7 +426,7 @@ class TrainLanguageGenerator(object):
             data = self.create_batch(Xs[jj:jj + self.bsz],
                                      tourist_locs[jj:jj + self.bsz],
                                      ys[jj:jj + self.bsz])
-            X_batch, (mask, t_locs_batch, y_batch), X_lengths, max_len = data
+            X_batch, (mask, t_locs_batch, y_batch), X_lengths, y_lengths, max_len = data
             res = self.model.forward(src_var=X_batch,
                                      src_lengths=X_lengths,
                                      trg_var=None,
@@ -391,17 +444,25 @@ class TrainLanguageGenerator(object):
             print(preds)
 
     def load_model(self, model_file):
-        self.model.load_state_dict(torch.load(model_file))
+        if os.path.exists(model_file):
+            print('IT EXISTS')
+            self.model.load_state_dict(torch.load(model_file))
+            if os.path.exists(model_file + '.optim'):
+                self.optim.load_state_dict(torch.load(model_file + '.optim'))
+        else:
+            print("IT DOES NOT EXIST")
+
+    def save_model(self):
+        torch.save(self.model.state_dict(), self.model_file)
+        torch.save(self.optim.state_dict(), self.model_file+'.optim')
+        with open(self.model_file+'.args') as f:
+            json.dump(self.args, f)
 
 if __name__ == '__main__':
-    """
-        TODO:
-            1. figure out where to get these damn Embeddings
-            2. actually implement the S2S model lol
-            3. it looks like the embeddings are actually part of the model
-
-    """
     trainer = TrainLanguageGenerator()
+    # trainer.load_model(trainer.model_file)
+
     trainer.train()
-    trainer.load_model(trainer.model_file)
     trainer.test_predict()
+    # trainer.eval_epoch()
+    # trainer.eval_test()
