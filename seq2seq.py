@@ -60,13 +60,15 @@ class BahdanauAttention(nn.Module):
 class Encoder(nn.Module):
 
     def __init__(self, n_lands=10, n_acts=3, hidden_size=128, emb_dim=32,
-                 n_layers=1, dropout=0.,
+                 n_layers=1, dropout=0., resnet_dim=2048, resnet_proj_dim=32,
                  bidirectional=False, vocab=None, rnn_type='LSTM', cuda=False):
 
         super(Encoder, self).__init__()
         self.hidden_size = hidden_size
         self.vocab = vocab
         self.emb_dim = emb_dim
+        self.resnet_dim = resnet_dim
+        self.resnet_proj_dim = resnet_proj_dim
         self.bidirectional = bidirectional
         self.rnn_type = rnn_type
         self.pad_idx = vocab.tok2i[PAD_TOKEN]
@@ -78,14 +80,15 @@ class Encoder(nn.Module):
 
         self.action_embedding = nn.Embedding(n_acts + n_lands + 4, emb_dim)
         self.observation_embedding = nn.Embedding(n_acts + n_lands + 4, emb_dim)
+        self.resnet_linear = nn.Linear(resnet_dim, resnet_proj_dim)
         self.dropout_layer = nn.Dropout(dropout)
         if self.rnn_type == 'LSTM':
-            self.rnn = nn.LSTM(emb_dim,
+            self.rnn = nn.LSTM(emb_dim + resnet_proj_dim, #concatenating resnet and gold standard
                                hidden_size, batch_first=True,
                                bidirectional=bidirectional,
                                dropout=dropout, num_layers=n_layers)
         else:
-            self.rnn = nn.GRU(emb_dim,
+            self.rnn = nn.GRU(emb_dim + resnet_proj_dim,
                               hidden_size, batch_first=True,
                               bidirectional=bidirectional,
                               dropout=dropout, num_layers=n_layers)
@@ -123,29 +126,44 @@ class Encoder(nn.Module):
         bsz = len(x)
         emb_size = len(x[0])
         emb_x = torch.FloatTensor(bsz, emb_size, self.emb_dim).zero_()
+        res_feats = torch.FloatTensor(bsz, emb_size, self.resnet_proj_dim).zero_()
         if self.use_cuda:
             emb_x = emb_x.cuda()
+            res_feats = res_feats.cuda()
         for i in range(bsz):
             ex = x[i]
             for j in range(len(ex)):
                 a_or_o = ex[j]
-                if type(a_or_o) is list:  # list of observations
-                    emb = torch.Tensor(self.emb_dim).zero_()
+                res_feat = torch.Tensor(self.resnet_proj_dim).zero_()
+                if self.use_cuda:
+                    res_feat = res_feat.cuda()
+                if type(a_or_o) is dict:  # list of observations
+                    gold_emb = torch.Tensor(self.emb_dim).zero_()
                     if self.use_cuda:
-                        emb = emb.cuda()
-                    for obs in a_or_o:
-                        # obs = Variable(torch.LongTensor([obs]))
-                        obs = torch.LongTensor([obs])
-                        if self.use_cuda:
-                            obs = obs.cuda()
-                        emb += self.observation_embedding(obs).view(-1)
+                        gold_emb = gold_emb.cuda()
+                    for k, feats in a_or_o.items():
+                        for obs in feats:
+                            # obs = Variable(torch.LongTensor([obs]))
+                            if type(obs) is list: #resnet features
+                                obs_tens = torch.FloatTensor(obs)
+                                if self.use_cuda:
+                                    obs_tens = obs_tens.cuda()
+                                res_feat += self.resnet_linear(obs_tens)
+                            else:
+                                obs = [obs]
+                                obs_tens = torch.LongTensor(obs)
+                                if self.use_cuda:
+                                    obs_tens = obs_tens.cuda()
+                                gold_emb += self.observation_embedding(obs_tens).view(-1)
                 else:  # action
                     act = Variable(torch.LongTensor([a_or_o]))
                     if self.use_cuda:
                         act = act.cuda()
-                    emb = self.action_embedding(act)
-                emb_x[i, j] = emb
-        return emb_x
+                    gold_emb = self.action_embedding(act)
+                emb_x[i, j] = gold_emb
+                res_feats[i, j] = res_feat
+        return torch.cat((emb_x, res_feats), 2)
+#         return emb_x
 
 
 class Decoder(nn.Module):
@@ -375,7 +393,7 @@ class Decoder(nn.Module):
             all_attention_scores = None
 
         mask = torch.cat(masks, 1)
-        
+
         return {'preds': all_predictions,
                 'log_probs': all_log_probs,
                 'att_scores': all_attention_scores,
@@ -390,7 +408,7 @@ class Seq2Seq(nn.Module):
                  n_enc_layers=1, n_dec_layers=1, dropout=0., word_dropout=0.,
                  bidirectional=False, attn_type='',
                  pass_hidden_state=True, vocab_src=None, vocab_trg=None,
-                 rnn_type=None,
+                 rnn_type=None, resnet_dim=0, resnet_proj_dim=0,
                  ctx_dim=0, use_prev_word=True, use_dec_state=True, max_length=0,
                  cuda=False,
                  **kwargs):
@@ -428,15 +446,34 @@ class Seq2Seq(nn.Module):
 
         self.criterion = nn.NLLLoss(reduce=False, size_average=False,
                                     ignore_index=self.trg_pad_idx)
-
-        self.encoder = Encoder(n_lands, n_acts, hidden_size, enc_emb_dim,
-                               n_enc_layers, dropout, bidirectional, vocab_src,
-                               rnn_type, self.use_cuda)
-        self.decoder = Decoder(hidden_size, dec_emb_dim, n_words_trg, n_dec_layers,
-                               dropout, self.attn_type, bidirectional,
-                               hidden_size, pass_hidden_state, vocab_trg,
-                               rnn_type, ctx_dim, use_prev_word,
-                               use_dec_state, max_length, self.use_cuda)
+        self.encoder = Encoder(n_lands=n_lands,
+                               n_acts=n_acts,
+                               hidden_size=hidden_size,
+                               emb_dim=enc_emb_dim,
+                               n_layers=n_enc_layers,
+                               dropout=dropout,
+                               resnet_dim=resnet_dim,
+                               resnet_proj_dim=resnet_proj_dim,
+                               bidirectional=bidirectional,
+                               vocab=vocab_src,
+                               rnn_type=rnn_type,
+                               cuda=self.use_cuda)
+        self.decoder = Decoder(hidden_size=hidden_size,
+                               emb_dim=dec_emb_dim,
+                               n_words=n_words_trg,
+                               n_layers=n_dec_layers,
+                               dropout=dropout,
+                               attn_type=self.attn_type,
+                               encoder_is_bidirectional=bidirectional,
+                               enc_hidden_size=hidden_size,
+                               pass_hidden_state=pass_hidden_state,
+                               vocab=vocab_trg,
+                               rnn_type=rnn_type,
+                               ctx_dim=ctx_dim,
+                               use_prev_word=use_prev_word,
+                               use_dec_state=use_dec_state,
+                               max_length=max_length,
+                               cuda=self.use_cuda)
 
     def compute_input_mask(self, src_var):
         mask = torch.LongTensor(len(src_var), len(src_var[0])).fill_(self.src_pad_idx)

@@ -1,6 +1,6 @@
 import argparse
 import os
-import json
+import ujson as json
 import torch
 import torch.optim as optim
 from collections import deque
@@ -11,6 +11,7 @@ from data_loader import Landmarks, step_aware, load_features, \
     FasttextFeatures, GoldstandardFeatures, ResnetFeatures
 from dict import Dictionary, START_TOKEN, END_TOKEN, UNK_TOKEN, PAD_TOKEN
 from seq2seq import Seq2Seq
+from kvmemnn import KVMemnn
 
 def str2bool(value):
     v = value.lower()
@@ -69,13 +70,15 @@ class TrainLanguageGenerator(object):
         parser.add_argument('--num-steps', type=int, default=-1)
         parser.add_argument('--enc-emb-sz', type=int, default=32)
         parser.add_argument('--dec-emb-sz', type=int, default=32)
+        parser.add_argument('--resnet-dim', type=int, default=2048)
+        parser.add_argument('--resnet-proj-dim', type=int, default=64)
         parser.add_argument('--hsz', type=int, default=128)
         parser.add_argument('--num-epochs', type=int, default=500)
         parser.add_argument('--bsz', type=int, default=64)
         parser.add_argument('--exp-name', type=str, default='test')
         parser.add_argument('--dropout', type=float, default=0.1)
         parser.add_argument('--bidirectional', type='bool', default=False)
-        parser.add_argument('--attention', type=str, default='')
+        parser.add_argument('--attention', type=str, default='none')
         parser.add_argument('--pass-hidden-state', type='bool', default=True)
         parser.add_argument('--use-dec-state',type='bool', default=True)
         parser.add_argument('--rnn-type', type=str, default='LSTM')
@@ -83,13 +86,14 @@ class TrainLanguageGenerator(object):
         # parser.add_argument('--n-enc-layers', type=int, default=2)
         # parser.add_argument('--n-dec-layers', type=int, default=2)
         parser.add_argument('--n-layers', type=int, default=1)
-        parser.add_argument('--learningrate', type=float, default=1.0)
+        parser.add_argument('--learningrate', type=float, default=.001)
         parser.add_argument('--dict-file', type=str, default='dict.txt')
         parser.add_argument('--temp-build', type='bool', default=False)
 
 
         parser.set_defaults(data_dir='data/',
                             goldstandard_features=True,
+                            resnet_features=True,
                             # bidirectional=False,
                             # pass_hidden_state=True,
                             # use_dec_state=True,
@@ -108,6 +112,8 @@ class TrainLanguageGenerator(object):
         self.data_dir = args.data_dir
         self.enc_emb_sz = args.enc_emb_sz
         self.dec_emb_sz = args.dec_emb_sz
+        self.resnet_dim = args.resnet_dim
+        self.resnet_proj_dim = args.resnet_proj_dim
         self.hsz = args.hsz
         self.num_epochs = args.num_epochs
         self.bsz = args.bsz
@@ -139,19 +145,23 @@ class TrainLanguageGenerator(object):
         self.setup_feature_loaders()
         print('Building Train Data...')
         self.train_data = self.load_data(self.train_set,
-                                         'train',
-                                         self.feature_loaders['goldstandard'],
+                                         'train_gold+resnet',
+                                         self.feature_loaders,
                                          temp_build=args.temp_build)
         print('Building Valid Data...')
         self.valid_data = self.load_data(self.valid_set,
-                                         'valid',
-                                         self.feature_loaders['goldstandard'],
+                                         'valid_gold+resnet',
+                                         self.feature_loaders,
                                          temp_build=args.temp_build)
         print('Building Test Data...')
         self.test_data = self.load_data(self.test_set,
-                                        'test',
-                                        self.feature_loaders['goldstandard'],
+                                        'test_gold+resnet',
+                                        self.feature_loaders,
                                         temp_build=args.temp_build)
+        self.setup_model()
+
+
+    def setup_model(self):
         self.max_len = max([len(seq) for seq in self.train_data[0]])
         self.model = Seq2Seq(n_lands=11,
                              n_acts=3,
@@ -159,6 +169,8 @@ class TrainLanguageGenerator(object):
                              hidden_size=self.hsz,
                              enc_emb_dim=self.enc_emb_sz,
                              dec_emb_dim=self.dec_emb_sz,
+                             resnet_dim=self.resnet_dim,
+                             resnet_proj_dim=self.resnet_proj_dim,
                              n_enc_layers=self.n_layers,
                              n_dec_layers=self.n_layers,
                              dropout=self.dropout,
@@ -174,6 +186,8 @@ class TrainLanguageGenerator(object):
                              use_dec_state=True,
                              max_length=self.max_len,
                              cuda=self.use_cuda)
+
+        # self.model = KVMemnn(args, self.dictionary)
         if self.use_cuda:
             self.model.cuda()
         self.optim = optim.Adam(self.model.parameters(), lr=self.learning_rate)
@@ -206,7 +220,7 @@ class TrainLanguageGenerator(object):
             self.feature_loaders['goldstandard'] = GoldstandardFeatures(
                                                             self.landmark_map)
 
-    def load_data(self, dataset, dataset_name, feature_loader, temp_build=False):
+    def load_data(self, dataset, dataset_name, feature_loaders, temp_build=False):
         Xs = []         # x_i = [a_1, o_1, a_2, ..., a_n, o_n] acts + obs
         tourist_locs = []
         landmarks = []
@@ -232,7 +246,14 @@ class TrainLanguageGenerator(object):
                             ls, tourist_loc = self.landmark_map.get_landmarks_2d(
                                             neighborhood, boundaries, loc)
                             landmarks.append(ls)
-                            obs_emb = feature_loader.get(neighborhood, loc)
+                            obs_emb = {}
+                            for k, loader in feature_loaders.items():
+                                if k == 'goldstandard':
+                                    features = loader.get(neighborhood, loc)
+                                else:
+                                    features = loader.get(neighborhood, loc[0], loc[1])
+                                obs_emb[k] = features
+                            # obs_emb = feature_loader.get(neighborhood, loc)
                             act_obs_memory.append(obs_emb)
 
                             Xs.append(list(act_obs_memory) + [self.action_obs_dict.tok2i[END_TOKEN]])
@@ -246,16 +267,24 @@ class TrainLanguageGenerator(object):
                                 ls, _ = self.landmark_map.get_landmarks_2d(
                                                 neighborhood, boundaries, loc)
                                 landmarks.append(ls)
-                                obs_emb = feature_loader.get(neighborhood, loc)
+                                obs_emb = {}
+                                for k, loader in feature_loaders.items():
+                                    if k == 'goldstandard':
+                                        features = loader.get(neighborhood, loc)
+                                    else:
+                                        features = loader.get(neighborhood, loc[0], loc[1])
+                                    obs_emb[k] = features
+                                # obs_emb = feature_loader.get(neighborhood, loc)
                                 act_obs_memory.append(obs_emb)
 
             data = [Xs, tourist_locs, landmarks, ys]
             if not temp_build:
+                print("Finished building {}, saving now".format(dataset_name))
                 os.makedirs(dataset_path)
                 for i, d in enumerate(['Xs', 'tourist_locs', 'landmarks', 'ys']):
+                    print("Saving {}".format(d))
                     with open(os.path.join(dataset_path, '{}.json'.format(d)), 'w') as f:
                         json.dump(data[i], f)
-
         return data
 
     def create_batch(self, Xs, tourist_locs, ys):
@@ -455,14 +484,13 @@ class TrainLanguageGenerator(object):
     def save_model(self):
         torch.save(self.model.state_dict(), self.model_file)
         torch.save(self.optim.state_dict(), self.model_file+'.optim')
-        with open(self.model_file+'.args') as f:
+        with open(self.model_file+'.args', 'w') as f:
             json.dump(self.args, f)
 
 if __name__ == '__main__':
     trainer = TrainLanguageGenerator()
     # trainer.load_model(trainer.model_file)
-
     trainer.train()
     trainer.test_predict()
-    # trainer.eval_epoch()
-    # trainer.eval_test()
+    trainer.eval_epoch()
+    trainer.eval_test()
