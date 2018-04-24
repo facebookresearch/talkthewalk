@@ -1,4 +1,4 @@
-
+import random
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -60,7 +60,8 @@ class BahdanauAttention(nn.Module):
 class Encoder(nn.Module):
 
     def __init__(self, n_lands=10, n_acts=3, hidden_size=128, emb_dim=32,
-                 n_layers=1, dropout=0., resnet_dim=2048, resnet_proj_dim=32,
+                 n_layers=1, dropout=0., use_resnet=True,
+                 resnet_dim=2048, resnet_proj_dim=32,
                  bidirectional=False, vocab=None, rnn_type='LSTM', cuda=False):
 
         super(Encoder, self).__init__()
@@ -80,7 +81,12 @@ class Encoder(nn.Module):
 
         self.action_embedding = nn.Embedding(n_acts + n_lands + 4, emb_dim)
         self.observation_embedding = nn.Embedding(n_acts + n_lands + 4, emb_dim)
-        self.resnet_linear = nn.Linear(resnet_dim, resnet_proj_dim)
+        self.use_resnet = use_resnet
+        if self.use_resnet:
+            self.resnet_linear = nn.Linear(resnet_dim, resnet_proj_dim)
+        else:
+            resnet_proj_dim = 0
+
         self.dropout_layer = nn.Dropout(dropout)
         if self.rnn_type == 'LSTM':
             self.rnn = nn.LSTM(emb_dim + resnet_proj_dim, #concatenating resnet and gold standard
@@ -162,7 +168,10 @@ class Encoder(nn.Module):
                     gold_emb = self.action_embedding(act)
                 emb_x[i, j] = gold_emb
                 res_feats[i, j] = res_feat
-        return torch.cat((emb_x, res_feats), 2)
+        if self.use_resnet:
+            return torch.cat((emb_x, res_feats), 2)
+        else:
+            return emb_x
 #         return emb_x
 
 
@@ -370,7 +379,7 @@ class Decoder(nn.Module):
 
             mask = (predictions != self.eos_idx) * mask
 
-            if trg_var is not None:  # teacher forcing, feed true targets to next step
+            if trg_var is not None and random.random() < 0.5:  # teacher forcing, feed true targets to next step
                 targets_this_iter = trg_var[:, i, None]       # (B, 1)
                 embedded = self.embedding(targets_this_iter)  # (B, 1, E)
                 embedded = self.emb_dropout(embedded)
@@ -410,7 +419,7 @@ class Seq2Seq(nn.Module):
                  pass_hidden_state=True, vocab_src=None, vocab_trg=None,
                  rnn_type=None, resnet_dim=0, resnet_proj_dim=0,
                  ctx_dim=0, use_prev_word=True, use_dec_state=True, max_length=0,
-                 cuda=False,
+                 cuda=False, use_resnet=True, fill_padding_mask=True,
                  **kwargs):
 
         super(Seq2Seq, self).__init__()
@@ -420,6 +429,7 @@ class Seq2Seq(nn.Module):
         self.enc_emb_dim = enc_emb_dim
         self.dec_emb_dim = dec_emb_dim
         self.use_cuda = torch.cuda.is_available() and cuda
+        self.fill_padding_mask = fill_padding_mask
 
         self.n_landmarks = n_lands
         self.n_acts = n_acts
@@ -457,7 +467,8 @@ class Seq2Seq(nn.Module):
                                bidirectional=bidirectional,
                                vocab=vocab_src,
                                rnn_type=rnn_type,
-                               cuda=self.use_cuda)
+                               cuda=self.use_cuda,
+                               use_resnet=use_resnet)
         self.decoder = Decoder(hidden_size=hidden_size,
                                emb_dim=dec_emb_dim,
                                n_words=n_words_trg,
@@ -524,6 +535,9 @@ class Seq2Seq(nn.Module):
     def get_loss(self, result=None, trg_var=None):
         # all masks are ByteTensors here; convert to float() when multiplying them with non-ByteTensors
         trg_mask = (trg_var != self.trg_pad_idx)
+        # if random.random() < 0.1:
+        #     import pdb; pdb.set_trace()
+
         mask = result['mask']  # this is false for items after </s> was predicted
         mask = mask * trg_mask       # mask if predicted sequence longer than target sequence
         padding_mask = 1-mask  # this is positive after </s> predicted
@@ -534,9 +548,11 @@ class Seq2Seq(nn.Module):
         voc_size = log_probs.size(2)
 
         log_probs_2d = log_probs.view(-1, voc_size)
+
         ce_loss = self.criterion(log_probs_2d, trg_var.view(-1))
         ce_loss = ce_loss.view([batch_size, time])
-        ce_loss = ce_loss.masked_fill(padding_mask, 0.)
+        if self.fill_padding_mask:
+            ce_loss = ce_loss.masked_fill(padding_mask, 0.)
         ce_loss = ce_loss.sum() / batch_size
 
         return {'loss': ce_loss}

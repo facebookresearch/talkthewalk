@@ -9,6 +9,7 @@ END_TOKEN = '__END__'
 PAD_TOKEN = '__PAD__'
 SPECIALS = [UNK_TOKEN, START_TOKEN, END_TOKEN, PAD_TOKEN]
 
+
 def split_tokenize(text):
     """Splits tokens based on whitespace after adding whitespace around
     punctuation.
@@ -17,12 +18,15 @@ def split_tokenize(text):
             .replace(',', ' , ').replace(';', ' ; ').replace(':', ' : ')
             .replace('!', ' ! ').replace('?', ' ? ')
             .split())
+
+
 class Dictionary:
 
-    def __init__(self, file=None, min_freq=0):
+    def __init__(self, file=None, min_freq=0, split=False):
         self.i2tok = list()
         self.tok2i = dict()
         self.tok2cnt = dict()
+        self.split = split
 
         for tok in ['__UNK__', '__START__', '__END__', '__PAD__']:
             self.tok2i[tok] = len(self.tok2i)
@@ -42,7 +46,6 @@ class Dictionary:
                         self.i2tok.append(tok)
 
         self.tokenizer = TweetTokenizer()
-        # self.tokenizer =
 
     def __len__(self):
         return len(self.i2tok)
@@ -51,19 +54,20 @@ class Dictionary:
         return self.tok2i.get(tok, self.tok2i['__UNK__'])
 
     def encode(self, msg, include_end=False):
-        ret = [self[tok] for tok in self.tokenizer.tokenize(msg)]
-        # ret = [self[tok] for tok in split_tokenize(msg)]
+        if self.split:
+            ret = [self[tok] for tok in split_tokenize(msg)]
+        else:
+            ret = [self[tok] for tok in self.tokenizer.tokenize(msg)]
         return ret + [self[END_TOKEN]] if include_end else ret
 
     def decode(self, toks):
         res = []
         for tok in toks:
             tok = self.i2tok[tok]
-            if tok not in SPECIALS:
+            if tok != END_TOKEN:
                 res.append(tok)
             else:
                 break
-        # res = [self.i2tok[i] for i in toks if self.i2tok[i] not in SPECIALS]
         return ' '.join(res)
 
     def add(self, msg):
@@ -99,6 +103,7 @@ if __name__ == '__main__':
             for msg in config['dialog']:
                 if msg['id'] == 'Tourist':
                     if msg['text'] not in ['ACTION:TURNLEFT', 'ACTION:TURNRIGHT', 'ACTION:FORWARD']:
-                        dictionary.add(msg['text'])
+                        if len(msg['text'].split(' ')) > 2:
+                            dictionary.add(msg['text'])
 
-    dictionary.save('./data/tourist_lower_dict.txt')
+    dictionary.save('./data/tourist_lower_dict_gt2.txt')
