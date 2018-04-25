@@ -153,9 +153,7 @@ class LocationPredictor(nn.Module):
         else:
             landmarks = torch.cat(l_embs, 1)
             landmarks = landmarks.resize(batch_size, landmarks.size(1), 16).transpose(1, 2)
-            print(landmarks[0, 0, :].norm(2))
-            print(emb[0, :].norm(2))
-            print('-' * 80)
+
             logits = torch.bmm(landmarks, emb.unsqueeze(-1)).squeeze(-1)
             prob = F.softmax(logits, dim=1)
 
@@ -249,7 +247,7 @@ def epoch(net, X, actions, landmarks, y, batch_sz, opt=None, shuffle=True, cuda=
                                                                       cuda=cuda)
         loss, acc, _ = net.forward(X_batch, action_batch, landmark_batch, y_batch)
 
-        l += loss.cpu().data.numpy()[0]
+        l += loss.cpu().data.numpy()
         a += acc
         n_batches += 1
 

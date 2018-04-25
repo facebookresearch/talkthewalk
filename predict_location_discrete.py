@@ -18,7 +18,7 @@ plt.switch_backend('agg')
 
 from data_loader import Landmarks, load_data_multiple_step, load_features, create_obs_dict, FasttextFeatures, GoldstandardFeatures, ResnetFeatures
 from utils import create_logger
-from predict_location_multiple_step import MapEmbedding2d, create_batch
+from predict_location_continuous import MapEmbedding2d, create_batch
 
 def eval_epoch(X, actions, landmarks, y, tourist, guide, batch_sz):
     tourist.eval()
@@ -49,22 +49,6 @@ def eval_epoch(X, actions, landmarks, y, tourist, guide, batch_sz):
 
     return correct/total
 
-
-class MapEmbedding(nn.Module):
-
-    def __init__(self, num_tokens, emb_size, init_std=1):
-        super(MapEmbedding, self).__init__()
-        self.emb_landmark = nn.Embedding(num_tokens, emb_size, padding_idx=0)
-        if init_std != 1.0:
-            self.emb_landmark.weight.data.normal_(0.0, init_std)
-        self.emb_size = emb_size
-
-    def forward(self, x):
-        bsz = x.size(0)
-        out = []
-        for i in range(bsz):
-            out.append(self.emb_landmark.forward(x[i, :, :]).sum(1).unsqueeze(0))
-        return torch.cat(out, 0)
 
 class Guide(nn.Module):
 

@@ -18,7 +18,7 @@ plt.switch_backend('agg')
 
 from data_loader import Landmarks, load_data_multiple_step, load_features, create_obs_dict, FasttextFeatures, GoldstandardFeatures, ResnetFeatures
 from utils import create_logger
-from predict_location_multiple_step import MapEmbedding2d, create_batch
+from predict_location_continuous import MapEmbedding2d, create_batch
 
 def eval_epoch(X, actions, landmarks, y, tourist, guide, batch_sz):
     tourist.eval()

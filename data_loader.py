@@ -6,7 +6,7 @@ import numpy
 import random
 import torch
 from torch.autograd import Variable
-
+#
 from sklearn.decomposition import PCA
 data_dir = os.environ.get('TALKTHEWALK_DATADIR', './data')
 
@@ -287,7 +287,7 @@ class ResnetFeatures:
 
 def step_agnostic(action, loc, boundaries):
     new_loc = copy.deepcopy(loc)
-    step = [(0, 1), (0, -1), (1, 0), (-1, 0)][action]
+    step = [(0, 1), (1, 0), (0, -1), (-1, 0)][action]
     new_loc[0] = min(max(loc[0] + step[0], boundaries[0]), boundaries[2])
     new_loc[1] = min(max(loc[1] + step[1], boundaries[1]), boundaries[3])
     return new_loc
@@ -319,7 +319,7 @@ def step_aware(action, loc, boundaries):
         new_loc[1] = min(max(new_loc[1], boundaries[1]), boundaries[3])
     return new_loc
 
-def load_data_multiple_step(configurations, feature_loaders, landmark_map, softmax='location', num_steps=2, samples_per_configuration=None):
+def load_data(configurations, feature_loaders, landmark_map, softmax='location', num_steps=2, samples_per_configuration=None):
     X_data, action_data, landmark_data, y_data = {k: list() for k in feature_loaders.keys()}, list(), list(), list()
 
     action_set = [[0, 1, 2, 3]]*(num_steps-1)
@@ -362,29 +362,6 @@ def load_data_multiple_step(configurations, feature_loaders, landmark_map, softm
     return X_data, action_data, landmark_data, y_data
 
 
-def load_data(configurations, feature_loaders, landmark_map, softmax='location'):
-    X_data, landmark_data, y_data = {k: list() for k in feature_loaders.keys()}, list(), list()
-
-    for config in configurations:
-        neighborhood = config['neighborhood']
-        x, y = config['target_location'][:2]
-        min_x, min_y = config['boundaries'][:2]
-
-        obs = {k: feature_loader.get(neighborhood, x, y) for k, feature_loader in feature_loaders.items()}
-
-        if landmark_map.has_landmarks(neighborhood, x, y):
-            for k in feature_loaders.keys():
-                X_data[k].append(obs[k])
-            if softmax == 'location':
-                landmarks, label_index = landmark_map.get_softmax_idx(neighborhood, min_x, min_y, x, y)
-            else:
-                landmarks, label_index = landmark_map.get_landmarks(neighborhood, min_x, min_y, x, y)
-            landmark_data.append(landmarks)
-            y_data.append(label_index)
-
-    return X_data, landmark_data, y_data
-
-
 def create_batch(X, landmarks, y, cuda=False):
     bsz = len(y)
     batch = dict()
@@ -423,11 +400,6 @@ def create_batch(X, landmarks, y, cuda=False):
         mask[i, :len(ls)] = 1.0
 
     return to_variable((batch, landmark_batch, mask, torch.LongTensor(y).unsqueeze(-1)), cuda=cuda)
-
-
-# TODO function to create torch tensor from list of lists
-def pad(tensor, type=torch.FloatTensor):
-    raise NotImplementedError()
 
 
 def to_variable(obj, cuda=True):

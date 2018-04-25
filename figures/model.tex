@@ -55,15 +55,15 @@
         \draw[step=7mm, base03, thick] (0, 0) grid
                                         (2.1, 2.1);
 
-        \draw[fill=base02, opacity=0.5] (0, 0) rectangle (0.7,0.7);
-        \draw[fill=base02, opacity=0.16] (0.7, 0) rectangle (1.4, 0.7);
-        \draw[fill=base02, opacity=0.85] (1.4, 0) rectangle (2.1, 0.7);
-        \draw[fill=base02, opacity=0.65] (0, 0.7) rectangle (0.7,1.4);
-        \draw[fill=base02, opacity=0.82] (0.7, 0.7) rectangle (1.4, 1.4);
-        \draw[fill=base02, opacity=0.54] (1.4, 0.7) rectangle (2.1, 1.4);
-        \draw[fill=base02, opacity=0.23] (0, 1.4) rectangle (0.7,2.1);
-        \draw[fill=base02, opacity=0.55] (0.7, 1.4) rectangle (1.4, 2.1);
-        \draw[fill=base02, opacity=0.18] (1.4, 1.4) rectangle (2.1, 2.1);
+        \draw[fill=base02, opacity=0.13] (0, 0) rectangle (0.7,0.7);
+        \draw[fill=base02, opacity=0.19] (0.7, 0) rectangle (1.4, 0.7);
+        \draw[fill=base02, opacity=0.14] (1.4, 0) rectangle (2.1, 0.7);
+        \draw[fill=base02, opacity=0.9] (0, 0.7) rectangle (0.7,1.4);
+        \draw[fill=base02, opacity=0.10] (0.7, 0.7) rectangle (1.4, 1.4);
+        \draw[fill=base02, opacity=0.11] (1.4, 0.7) rectangle (2.1, 1.4);
+        \draw[fill=base02, opacity=0.16] (0, 1.4) rectangle (0.7,2.1);
+        \draw[fill=base02, opacity=0.15] (0.7, 1.4) rectangle (1.4, 2.1);
+        \draw[fill=base02, opacity=0.13] (1.4, 1.4) rectangle (2.1, 2.1);
         \coordinate (IC) at (0, -1.0);
     \end{scope}
     \begin{scope}[xshift=15cm, yshift=-6cm,
@@ -78,17 +78,17 @@
         \draw[base03, thick] (0,3) rectangle (1,4);
     \end{scope}
     \begin{scope}[xshift=0cm, yshift=-5cm]
-        \node[font=\fontsize{16}{0}\selectfont] {``I went left and now I see a bar''};
+        \node[font=\fontsize{16}{0}\selectfont] {``I went left''};
         \draw[->, rounded corners, color=base02, ultra thick]  (0, 1)  -- (0, 2) -- (6.5, 2) -- (IC);
     \end{scope}
     \begin{scope}[xshift=3cm, yshift=-2.2cm]
         \node[font=\fontsize{12}{0}\selectfont] {predict mask};
     \end{scope}
     \begin{scope}[xshift=8cm,yshift=9cm, every node/.append style={yslant=0.3,xslant=0.0}]
-        \node[rectangle, color=blue, font=\fontsize{18}{0}\selectfont] {$\mathbf{e^{map}_t}$};
+        \node[rectangle, color=blue, font=\fontsize{18}{0}\selectfont] {$\mathbf{U^t}$};
     \end{scope}
     \begin{scope}[xshift=21cm,yshift=0.5cm, every node/.append style={yslant=0.3,xslant=0.0}]
-        \node[rectangle, color=cyan, font=\fontsize{18}{0}\selectfont] {$\mathbf{e^{map}_{t+1}}$};
+        \node[rectangle, color=cyan, font=\fontsize{18}{0}\selectfont] {$\mathbf{U^{t+1}}$};
     \end{scope}
 \end{tikzpicture}
 \end{document}
