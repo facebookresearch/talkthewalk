@@ -8,7 +8,7 @@ import torch
 from torch.autograd import Variable
 #
 from sklearn.decomposition import PCA
-data_dir = os.environ.get('TALKTHEWALK_DATADIR', './data')
+data_dir = os.environ.get(os.getcwd(), './data')
 
 class Landmarks(object):
 
