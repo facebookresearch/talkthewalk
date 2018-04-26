@@ -12,7 +12,7 @@ class CBoW(nn.Module):
         super(CBoW, self).__init__()
         self.emb_fn = nn.Embedding(num_tokens, emb_size, padding_idx=padding_idx)
         if init_std != 1.0:
-            self.emb.weight.data.normal_(0.0, init_std)
+            self.emb_fn.weight.data.normal_(0.0, init_std)
         self.emb_size = emb_size
 
     def forward(self, x):
