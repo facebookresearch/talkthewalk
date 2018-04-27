@@ -1,7 +1,6 @@
 from __future__ import division
 
 import os
-import math
 import json
 import argparse
 import torch
@@ -16,9 +15,11 @@ from sklearn.utils import shuffle
 from matplotlib import pyplot as plt
 plt.switch_backend('agg')
 
-from data_loader import Landmarks, load_data_multiple_step, load_features, create_obs_dict, FasttextFeatures, GoldstandardFeatures, ResnetFeatures
+from data_loader import Landmarks, load_data, load_features, create_obs_dict, FasttextFeatures, GoldstandardFeatures, ResnetFeatures
 from utils import create_logger
-from predict_location_continuous import MapEmbedding2d, create_batch
+from predict_location_continuous import create_batch
+from modules import MASC, CBoW
+
 
 def eval_epoch(X, actions, landmarks, y, tourist, guide, batch_sz):
     tourist.eval()
@@ -52,51 +53,31 @@ def eval_epoch(X, actions, landmarks, y, tourist, guide, batch_sz):
 
 class Guide(nn.Module):
 
-    def __init__(self, in_vocab_sz, num_landmarks, embed_sz=64, condition_on_action=True, max_steps=2):
+    def __init__(self, in_vocab_sz, num_landmarks, embed_sz=64, apply_masc=True, T=2):
         super(Guide, self).__init__()
         self.in_vocab_sz = in_vocab_sz
         self.num_landmarks = num_landmarks
         self.embed_sz = embed_sz
-        self.max_steps = max_steps
-        self.condition_on_action = condition_on_action
-        self.emb_map = MapEmbedding2d(num_landmarks, embed_sz, init_std=0.1)
+        self.T = T
+        self.apply_masc = apply_masc
+        self.emb_map = CBoW(num_landmarks, embed_sz, init_std=0.1)
         self.feature_emb = nn.ModuleList()
-        for channel in range(max_steps):
+        for channel in range(T+1):
             self.feature_emb.append(nn.Linear(in_vocab_sz, embed_sz))
 
-        self.conv_weight = nn.Parameter(torch.FloatTensor(
-                embed_sz, embed_sz, 3, 3))
-        std = 1.0/(embed_sz*9)
-        self.conv_weight.data.uniform_(-std, std)
-        self.mask_conv = True
-        if self.condition_on_action:
+
+        self.masc_fn = MASC(embed_sz, apply_masc=apply_masc)
+        if self.apply_masc:
             self.action_emb = nn.ModuleList()
-            for i in range(max_steps - 1):
+            for i in range(T):
                 self.action_emb.append(nn.Linear(in_vocab_sz, 9))
 
-        self.attention = nn.Parameter(torch.FloatTensor(2*max_steps-1, embed_sz).normal_(0.0, 0.1))
         self.act_lin = nn.Linear(embed_sz, 9)
 
 
     def forward(self, message, landmarks):
-        # batch_size = message.size(0)
-        # feat_embs = list()
-        # for c in range(self.num_channels):
-        #     feat_embs.append(self.feature_emb[c](message[:, c]).unsqueeze(1))
-        # feat_emb = torch.cat(feat_embs, 1)
-        # feature_msg = feat_emb.sum(1)
-
-        # f_msgs = list()
-        # for k in range(self.max_steps):
-        #     query = self.attention[k, :].unsqueeze(-1).unsqueeze(0).repeat(batch_size, 1, 1)
-        #     score = torch.bmm(feat_emb, query).squeeze(-1)
-        #     att = F.softmax(score, dim=1).unsqueeze(1)
-        #     f_emb = torch.bmm(att, feat_emb).squeeze(1)
-        #     f_msgs.append(f_emb)
-        # feature_msg = torch.cat(f_msgs, 1)
-
         f_msgs = list()
-        for k in range(self.max_steps):
+        for k in range(self.T+1):
             msg = message[0].cuda()
             # f_msgs.append(self.feature_emb.forward(message[:, k*self.num_channels:(k+1)*self.num_channels]))
             f_msgs.append(self.feature_emb[k].forward(msg))
@@ -106,44 +87,19 @@ class Guide(nn.Module):
         l_emb = self.emb_map.forward(landmarks).permute(0, 3, 1, 2)
         l_embs = [l_emb]
 
-        if self.condition_on_action:
-            for j in range(self.max_steps - 1):
-                k = self.max_steps + j
-                # query = self.attention[k, :].unsqueeze(-1).unsqueeze(0).repeat(batch_size, 1, 1)
-                # score = torch.bmm(feat_emb, query).squeeze(-1)
-                # att = F.softmax(score, dim=1).unsqueeze(1)
-                # action_out = torch.bmm(att, feat_emb).squeeze(1)
+        if self.apply_masc:
+            for j in range(self.T):
                 action_out = self.action_emb[j](message[1].cuda())
-                # action_out = self.act_lin.forward(action_out)
 
-                # act_emb = list()
-                # for channel in range(self.num_channels):
-                #     act_emb.append(self.action_emb[channel].forward(message[:, k*self.num_channels+channel]))
-                # action_out = sum(act_emb)
-                # action_out = self.action_emb.forward(message[:, k*self.num_channels:(k+1)*self.num_channels])
-                out = Variable(torch.FloatTensor(batch_size, self.embed_sz, 4, 4).zero_().cuda())
-                for i in range(batch_size):
-                    selected_inp = l_embs[-1][i, :, :, :].unsqueeze(0)
-                    mask = F.softmax(action_out[i], dim=0).resize(1, 1, 3, 3)
-                    weight = mask * self.conv_weight
-                    out[i, :, :, :] = F.conv2d(selected_inp, weight, padding=1).squeeze(0)
+                out = self.masc_fn.forward(l_embs[-1], action_out)
                 l_embs.append(out)
         else:
-            weight = self.conv_weight
-            if self.mask_conv:
-                mask = torch.FloatTensor(1, 1, 3, 3).cuda().zero_()
-                mask[0, 0, 0, 1] = 1.0
-                mask[0, 0, 1, 0] = 1.0
-                mask[0, 0, 2, 1] = 1.0
-                mask[0, 0, 1, 2] = 1.0
-                weight = self.conv_weight * Variable(mask)
-            for j in range(self.max_steps - 1):
-                tmp = F.conv2d(l_embs[-1], weight, padding=1)
-                l_embs.append(tmp)
+            for j in range(self.T):
+                out = self.masc_fn.forward_no_masc(l_embs[-1])
+                l_embs.append(out)
 
         landmarks = torch.cat(l_embs, 1)
-        landmarks = landmarks.resize(batch_size, landmarks.size(1), 16).transpose(1, 2)
-
+        landmarks = landmarks.view(batch_size, landmarks.size(1), 16).transpose(1, 2)
 
         logits = torch.bmm(landmarks, feature_msg.unsqueeze(-1)).squeeze(-1)
         prob = F.softmax(logits, dim=1)
@@ -156,29 +112,29 @@ class Guide(nn.Module):
         state['num_landmarks'] = self.num_landmarks
         state['embed_sz'] = self.embed_sz
         state['parameters'] = self.state_dict()
-        state['max_steps'] = self.max_steps
-        state['condition_on_action'] = self.condition_on_action
+        state['T'] = self.T
+        state['apply_masc'] = self.apply_masc
         torch.save(state, path)
 
     @classmethod
     def load(cls, path):
         state = torch.load(path)
-        guide = cls(state['in_vocab_sz'], state['num_landmarks'], embed_sz=state['embed_sz'], max_steps=state['max_steps'],
-                    condition_on_action=state['condition_on_action'])
+        guide = cls(state['in_vocab_sz'], state['num_landmarks'], embed_sz=state['embed_sz'], T=state['T'],
+                    apply_masc=state['apply_masc'])
         guide.load_state_dict(state['parameters'])
         return guide
 
 
 class Tourist(nn.Module):
     def __init__(self, goldstandard_features, resnet_features, fasttext_features,
-                 emb_sz, vocab_sz, max_steps=2, condition_on_action=False):
+                 emb_sz, vocab_sz, T=2, apply_masc=False):
         super(Tourist, self).__init__()
         self.goldstandard_features = goldstandard_features
         self.resnet_features = resnet_features
         self.fasttext_features = fasttext_features
         self.emb_sz = emb_sz
-        self.max_steps = max_steps
-        self.condition_on_action = condition_on_action
+        self.T = T
+        self.apply_masc = apply_masc
         self.vocab_sz = vocab_sz
 
 
@@ -189,13 +145,13 @@ class Tourist(nn.Module):
         if self.resnet_features:
             self.resnet_emb_linear = nn.Linear(2048, emb_sz)
 
-        self.num_embeddings = max_steps
-        if self.condition_on_action:
+        self.num_embeddings = T+1
+        if self.apply_masc:
             self.action_emb = nn.Embedding(4, emb_sz)
-            self.num_embeddings += max_steps - 1
-            self.act_comms = nn.Linear((max_steps - 1) * self.emb_sz, vocab_sz)
+            self.num_embeddings += T
+            self.act_comms = nn.Linear(T * self.emb_sz, vocab_sz)
 
-        self.feat_comms = nn.Linear(self.max_steps*self.emb_sz, vocab_sz)
+        self.feat_comms = nn.Linear((T+1)*self.emb_sz, vocab_sz)
 
         self.loss = nn.CrossEntropyLoss()
         self.value_pred = nn.Linear(self.num_embeddings*self.emb_sz, 1)
@@ -209,8 +165,8 @@ class Tourist(nn.Module):
                 feat_emb.append(self.goldstandard_emb.forward(X['goldstandard'][:, step, :]).sum(dim=1))
 
         act_emb = list()
-        if self.condition_on_action:
-            for step in range(max_steps-1):
+        if self.apply_masc:
+            for step in range(self.T):
                 act_emb.append(self.action_emb.forward(actions[:, step]))
 
         comms = list()
@@ -225,7 +181,7 @@ class Tourist(nn.Module):
         probs.append(feat_prob)
         comms.append(feat_msg)
 
-        if self.condition_on_action:
+        if self.apply_masc:
             act_embeddings = torch.cat(act_emb, 1)
             # act_logits = act_embeddings
             act_logits = self.act_comms(act_embeddings)
@@ -235,42 +191,8 @@ class Tourist(nn.Module):
             probs.append(act_prob)
             comms.append(act_msg)
 
-        # probs = list()
-        # comms = list()
-        # sampled_actions = list()
-
-
-        # embeddings = emb.resize(batch_size, self.num_embeddings*self.emb_sz)
-        # # embeddings = list()
-        # for k in range(self.length):
-        #     # query = self.attention_score[k, :].unsqueeze(-1).unsqueeze(0).repeat(batch_size, 1, 1)
-        #     # score = torch.bmm(emb, query).squeeze(-1)
-        #     # att = F.softmax(score, dim=1)
-        #     #
-        #     # # # soft attention
-        #     # e = torch.bmm(att.unsqueeze(1), emb).squeeze(1)
-        #     # embeddings.append(e)
-        #
-        #     # hard attention
-        #     # att = att.squeeze()
-        #     # sampled_index = att.cpu().multinomial(1)
-        #     # sampled_actions.append(sampled_index)
-        #     # probs.append(att)
-        #     # e = torch.cat([emb[i, sampled_index[i, 0].cuda(), :] for i in range(batch_size)], 0)
-        #     # embeddings.append(e)
-        #
-        #     # e = emb[:, k, :]
-        #     # embeddings.append(e)
-        #
-        #     logits = self.out_comms[k](emb[:, k, :])
-        #     prob = F.softmax(logits, dim=-1)
-        #     probs.append(prob)
-        #     sampled_comm = prob.cpu().multinomial(1)
-        #     comms.append(sampled_comm)
-        #     sampled_actions.append(sampled_comm)
-
         # emb = torch.cat(embeddings, 1)
-        if self.condition_on_action:
+        if self.apply_masc:
             embeddings = torch.cat([feat_embeddings, act_embeddings], 1).resize(batch_size, self.num_embeddings*self.emb_sz)
         else:
             embeddings = torch.cat([feat_embeddings], 1).resize(batch_size, self.num_embeddings * self.emb_sz)
@@ -284,8 +206,8 @@ class Tourist(nn.Module):
         state['resnet_features'] = self.resnet_features
         state['fasttext_features'] = self.fasttext_features
         state['emb_sz'] = self.emb_sz
-        state['max_steps'] = self.max_steps
-        state['condition_on_action'] = self.condition_on_action
+        state['T'] = self.T
+        state['apply_masc'] = self.apply_masc
         state['parameters'] = self.state_dict()
         torch.save(state, path)
 
@@ -293,7 +215,7 @@ class Tourist(nn.Module):
     def load(cls, path):
         state = torch.load(path)
         tourist = cls(state['goldstandard_features'], state['resnet_features'], state['fasttext_features'],
-                      state['emb_sz'], 1000, max_steps=state['max_steps'], condition_on_action=state['condition_on_action'])
+                      state['emb_sz'], 1000, T=state['T'], apply_masc=state['condition_on_action'])
         tourist.load_state_dict(state['parameters'])
 
         return tourist
@@ -305,8 +227,8 @@ if __name__ == '__main__':
     parser.add_argument('--fasttext-features', action='store_true')
     parser.add_argument('--goldstandard-features', action='store_true')
     parser.add_argument('--softmax', choices=['landmarks', 'location'], default='landmarks')
-    parser.add_argument('--condition-on-action', action='store_true')
-    parser.add_argument('--num-steps', type=int, default=2)
+    parser.add_argument('--masc', action='store_true')
+    parser.add_argument('--T', type=int, default=2)
     parser.add_argument('--vocab-sz', type=int, default=2)
     parser.add_argument('--embed-sz', type=int, default=32)
     parser.add_argument('--batch-sz', type=int, default=128)
@@ -318,9 +240,9 @@ if __name__ == '__main__':
     report_every = 5 # 10 epochs
 
     exp_dir = os.path.join(os.environ['TALKTHEWALK_EXPDIR'], args.exp_name)
-    if os.path.exists(exp_dir):
-        raise RuntimeError('Experiment directory already exist..')
-    os.mkdir(exp_dir)
+    if not os.path.exists(exp_dir):
+        # raise RuntimeError('Experiment directory already exist..')
+        os.mkdir(exp_dir)
 
     logger = create_logger(os.path.join(exp_dir, 'log.txt'))
     logger.info(args)
@@ -351,30 +273,30 @@ if __name__ == '__main__':
         in_vocab_sz = len(landmark_map.itos) + 1
     assert (len(feature_loaders) > 0)
 
-    X_train, actions_train, landmark_train, y_train = load_data_multiple_step(train_configs, feature_loaders,
+    X_train, actions_train, landmark_train, y_train = load_data(train_configs, feature_loaders,
                                                                               landmark_map,
                                                                               softmax=args.softmax,
-                                                                              num_steps=args.num_steps)
-    X_valid, actions_valid, landmark_valid, y_valid = load_data_multiple_step(valid_configs, feature_loaders,
-                                                                              landmark_map,
-                                                                              softmax=args.softmax,
-                                                                              num_steps=args.num_steps)
-    X_test, actions_test, landmark_test, y_test = load_data_multiple_step(test_configs, feature_loaders, landmark_map,
-                                                                          softmax=args.softmax,
-                                                                          num_steps=args.num_steps)
+                                                                              num_steps=args.T+1)
+    X_valid, actions_valid, landmark_valid, y_valid = load_data(valid_configs, feature_loaders,
+                                                                landmark_map,
+                                                                softmax=args.softmax,
+                                                                num_steps=args.T+1)
+    X_test, actions_test, landmark_test, y_test = load_data(test_configs, feature_loaders, landmark_map,
+                                                            softmax=args.softmax,
+                                                            num_steps=args.T+1)
 
     num_embeddings = len(landmark_map.types)+1
     if args.softmax == 'location':
         num_embeddings = len(landmark_map.global_coord_to_idx)
     # create models
-    in_vocab_sz = args.num_steps*args.embed_sz
-    if args.condition_on_action:
-        in_vocab_sz += (args.num_steps - 1)*args.embed_sz
+    in_vocab_sz = (args.T+1)*args.embed_sz
+    if args.masc:
+        in_vocab_sz += args.T*args.embed_sz
 
     guide = Guide(args.vocab_sz, num_embeddings, embed_sz=args.embed_sz,
-                  condition_on_action=args.condition_on_action, max_steps=args.num_steps)
+                  apply_masc=args.masc, T=args.T)
     tourist = Tourist(args.goldstandard_features, args.resnet_features, args.fasttext_features, args.embed_sz, args.vocab_sz,
-                      condition_on_action=args.condition_on_action, max_steps=args.num_steps)
+                      apply_masc=args.masc, T=args.T)
 
     if args.cuda:
         guide = guide.cuda()
