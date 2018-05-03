@@ -21,32 +21,65 @@ from predict_location_continuous import create_batch
 from modules import MASC, CBoW
 
 
-def eval_epoch(X, actions, landmarks, y, tourist, guide, batch_sz):
+def eval_epoch(X, actions, landmarks, y, tourist, guide, batch_sz, cuda, t_opt=None, g_opt=None):
     tourist.eval()
     guide.eval()
 
     correct, total = 0, 0
     for ii in range(0, len(y), args.batch_sz):
-        X_batch = {k: X[k][ii:ii + args.batch_sz] for k in X.keys()}
-        actions_batch = actions[ii:ii + args.batch_sz]
-        landmark_batch = landmarks[ii:ii + args.batch_sz]
+        X_batch = {k: X[k][ii:ii + batch_sz] for k in X.keys()}
+        actions_batch = actions[ii:ii + batch_sz]
+        landmark_batch = landmarks[ii:ii + batch_sz]
         y_batch = y[ii:ii + args.batch_sz]
         batch_in, batch_actions, batch_landmarks, batch_tgt = create_batch(X_batch, actions_batch, landmark_batch,
                                                                            y_batch, cuda=args.cuda)
-
         # forward
         t_comms, t_probs, t_val = tourist(batch_in, batch_actions)
-        # t_msg = torch.cat(t_comms, 1).detach()
-        # # t_msg = t_msg.type(torch.cuda.FloatTensor)
-        # if args.cuda:
-        #     t_msg = t_msg.cuda()
+        if cuda:
+            t_comms = [x.cuda() for x in t_comms]
         out_g = guide(t_comms, batch_landmarks)
 
         # acc
-        batch_tgt = batch_tgt[:, 0]*4 + batch_tgt[:, 1]
+        tgt = (batch_tgt[:, 0]*4 + batch_tgt[:, 1])
+        pred = torch.max(out_g, 1)[1]
         correct += sum(
-            [1.0 for pred, target in zip(torch.max(out_g, 1)[1].cpu().data, batch_tgt.cpu().data) if pred == target])
+            [1.0 for y_hat, y_true in zip(pred, tgt) if y_hat == y_true])
         total += len(y_batch)
+
+
+        if t_opt and g_opt:
+            # train if optimizers are specified
+            g_loss = -torch.log(torch.gather(out_g, 1, tgt))
+            _, max_ind = torch.max(out_g, 1)
+
+            # tourist loss
+            rewards = -g_loss  # tourist reward is log likelihood of correct answer
+
+            t_rl_loss = 0.
+            eps = 1e-16
+
+            advantage = Variable((rewards.data - t_val.data))
+            if args.cuda:
+                advantage = advantage.cuda()
+            t_val_loss = ((t_val - Variable(rewards.data)) ** 2).mean()  # mse
+
+            for action, prob in zip(t_comms, t_probs):
+                if args.cuda:
+                    action = action.cuda()
+                    prob = prob.cuda()
+                action_prob = action * prob + (1.0 - action) * (1.0 - prob)
+
+                t_rl_loss -= (torch.log(action_prob + eps) * advantage).sum()
+
+            # backward
+            g_opt.zero_grad()
+            t_opt.zero_grad()
+            g_loss.mean().backward()
+            (t_rl_loss + t_val_loss).backward()
+            torch.nn.utils.clip_grad_norm(tourist.parameters(), 5)
+            torch.nn.utils.clip_grad_norm(guide.parameters(), 5)
+            g_opt.step()
+            t_opt.step()
 
     return correct/total
 
@@ -62,15 +95,19 @@ class Guide(nn.Module):
         self.apply_masc = apply_masc
         self.emb_map = CBoW(num_landmarks, embed_sz, init_std=0.1)
         self.feature_emb = nn.ModuleList()
+        self.feature_mask = nn.ParameterList()
         for channel in range(T+1):
             self.feature_emb.append(nn.Linear(in_vocab_sz, embed_sz))
+            self.feature_mask.append(nn.Parameter(torch.FloatTensor(1, in_vocab_sz).fill_(1.0)))
 
 
         self.masc_fn = MASC(embed_sz, apply_masc=apply_masc)
         if self.apply_masc:
             self.action_emb = nn.ModuleList()
+            self.action_mask = nn.ParameterList()
             for i in range(T):
                 self.action_emb.append(nn.Linear(in_vocab_sz, 9))
+                self.action_mask.append(nn.Parameter(torch.FloatTensor(1, in_vocab_sz).fill_(1.0)))
 
         self.act_lin = nn.Linear(embed_sz, 9)
 
@@ -78,8 +115,7 @@ class Guide(nn.Module):
     def forward(self, message, landmarks):
         f_msgs = list()
         for k in range(self.T+1):
-            msg = message[0].cuda()
-            # f_msgs.append(self.feature_emb.forward(message[:, k*self.num_channels:(k+1)*self.num_channels]))
+            msg = message[0]
             f_msgs.append(self.feature_emb[k].forward(msg))
         feature_msg = torch.cat(f_msgs, 1)
         batch_size = message[0].size(0)
@@ -89,7 +125,8 @@ class Guide(nn.Module):
 
         if self.apply_masc:
             for j in range(self.T):
-                action_out = self.action_emb[j](message[1].cuda())
+                act_msg = message[1]
+                action_out = self.action_emb[j](act_msg)
 
                 out = self.masc_fn.forward(l_embs[-1], action_out)
                 l_embs.append(out)
@@ -137,7 +174,6 @@ class Tourist(nn.Module):
         self.apply_masc = apply_masc
         self.vocab_sz = vocab_sz
 
-
         if self.goldstandard_features:
             self.goldstandard_emb = nn.Embedding(11, emb_sz)
         if self.fasttext_features:
@@ -146,15 +182,20 @@ class Tourist(nn.Module):
             self.resnet_emb_linear = nn.Linear(2048, emb_sz)
 
         self.num_embeddings = T+1
+        self.feat_masks = nn.ParameterList()
+        for _ in range(T+1):
+            self.feat_masks.append(nn.Parameter(torch.FloatTensor(1, emb_sz).normal_(0.0, 0.1)))
         if self.apply_masc:
             self.action_emb = nn.Embedding(4, emb_sz)
             self.num_embeddings += T
-            self.act_comms = nn.Linear(T * self.emb_sz, vocab_sz)
+            self.act_masks = nn.ParameterList()
+            for _ in range(T):
+                self.act_masks.append(nn.Parameter(torch.FloatTensor(1, emb_sz).normal_(0.0, 0.1)))
 
         self.feat_comms = nn.Linear((T+1)*self.emb_sz, vocab_sz)
 
         self.loss = nn.CrossEntropyLoss()
-        self.value_pred = nn.Linear(self.num_embeddings*self.emb_sz, 1)
+        self.value_pred = nn.Linear(2*self.emb_sz, 1)
 
     def forward(self, X, actions, greedy=False):
         batch_size = actions.size(0)
@@ -162,19 +203,23 @@ class Tourist(nn.Module):
         if self.goldstandard_features:
             max_steps = X['goldstandard'].size(1)
             for step in range(max_steps):
-                feat_emb.append(self.goldstandard_emb.forward(X['goldstandard'][:, step, :]).sum(dim=1))
+                emb = self.goldstandard_emb.forward(X['goldstandard'][:, step, :]).sum(dim=1)
+                emb = emb * self.feat_masks[step]
+                feat_emb.append(emb)
 
         act_emb = list()
         if self.apply_masc:
             for step in range(self.T):
-                act_emb.append(self.action_emb.forward(actions[:, step]))
+                emb = self.action_emb.forward(actions[:, step])
+                emb = emb * self.act_masks[step]
+                act_emb.append(emb)
 
         comms = list()
         probs = list()
 
-        feat_embeddings = torch.cat(feat_emb, 1)
-        feat_logits = self.feat_comms(feat_embeddings)
-        # feat_logits = feat_embeddings
+        feat_embeddings = sum(feat_emb)
+        # feat_logits = self.feat_comms(feat_embeddings)
+        feat_logits = feat_embeddings
         feat_prob = F.sigmoid(feat_logits).cpu()
         feat_msg = feat_prob.bernoulli().detach()
 
@@ -182,9 +227,9 @@ class Tourist(nn.Module):
         comms.append(feat_msg)
 
         if self.apply_masc:
-            act_embeddings = torch.cat(act_emb, 1)
-            # act_logits = act_embeddings
-            act_logits = self.act_comms(act_embeddings)
+            act_embeddings = sum(act_emb)
+            act_logits = act_embeddings
+            # act_logits = self.act_comms(act_embeddings)
             act_prob = F.sigmoid(act_logits).cpu()
             act_msg = act_prob.bernoulli().detach()
 
@@ -193,9 +238,9 @@ class Tourist(nn.Module):
 
         # emb = torch.cat(embeddings, 1)
         if self.apply_masc:
-            embeddings = torch.cat([feat_embeddings, act_embeddings], 1).resize(batch_size, self.num_embeddings*self.emb_sz)
+            embeddings = torch.cat([feat_embeddings, act_embeddings], 1).resize(batch_size, 2*self.emb_sz)
         else:
-            embeddings = torch.cat([feat_embeddings], 1).resize(batch_size, self.num_embeddings * self.emb_sz)
+            embeddings = feat_embeddings
         value = self.value_pred(embeddings)
 
         return comms, probs, value
@@ -229,8 +274,8 @@ if __name__ == '__main__':
     parser.add_argument('--softmax', choices=['landmarks', 'location'], default='landmarks')
     parser.add_argument('--masc', action='store_true')
     parser.add_argument('--T', type=int, default=2)
-    parser.add_argument('--vocab-sz', type=int, default=2)
-    parser.add_argument('--embed-sz', type=int, default=32)
+    parser.add_argument('--vocab-sz', type=int, default=500)
+    parser.add_argument('--embed-sz', type=int, default=128)
     parser.add_argument('--batch-sz', type=int, default=128)
     parser.add_argument('--num-epochs', type=int, default=500)
     parser.add_argument('--exp-name', type=str, default='test')
@@ -314,77 +359,19 @@ if __name__ == '__main__':
         # train
         tourist.train(); guide.train()
         X_train['goldstandard'], actions_train, landmark_train, y_train = shuffle(X_train['goldstandard'], actions_train, landmark_train, y_train)
-        g_losses, t_rl_losses, t_val_losses = [], [], []
-        g_accs = []
-        for ii in range(0, len(y_train), args.batch_sz):
-            X_batch = {k: X_train[k][ii:ii+args.batch_sz] for k in X_train.keys()}
-            actions_batch = actions_train[ii:ii+args.batch_sz]
-            landmark_batch = landmark_train[ii:ii+args.batch_sz]
-            y_batch = y_train[ii:ii+args.batch_sz]
-            batch_in, batch_actions, batch_landmarks, batch_tgt = create_batch(X_batch, actions_batch, landmark_batch, y_batch, cuda=args.cuda)
 
-            # forward
-            t_comms, t_probs, t_val = tourist(batch_in, batch_actions)
-            # t_msg = torch.cat(t_comms, 1).detach()
-            # t_msg = t_msg.type(torch.cuda.FloatTensor)
-            # if args.cuda:
-            #     t_msg = t_msg.cuda()
-            out_g = guide(t_comms, batch_landmarks)
-
-            # guide loss
-            batch_tgt = batch_tgt[:, 0]*4 + batch_tgt[:, 1]
-            g_loss = -torch.log(torch.gather(out_g, 1, batch_tgt))
-            _, max_ind = torch.max(out_g, 1)
-            g_accs.extend([float(pred == target) for pred, target in zip(batch_tgt.cpu().data.numpy(), max_ind.cpu().data.numpy())])
-
-            # tourist loss
-            rewards = -g_loss # tourist reward is log likelihood of correct answer
-            reward_std = np.maximum(np.std(rewards.cpu().data.numpy()), 1.)
-            reward_mean = float(rewards.cpu().data.numpy().mean())
-            if reward_std == 0: reward_std = 1
-            t_rl_loss, t_val_loss, t_reg = 0., 0., 0.
-            eps, lamb = 1e-16, 1e-4
-
-            advantage = Variable((rewards.data - t_val.data))
-            if args.cuda:
-                advantage = advantage.cuda()
-            t_val_loss += ((t_val - Variable(rewards.data)) ** 2).mean()  # mse
-
-            for action, prob in zip(t_probs, t_probs):
-                if args.cuda:
-                    action = action.cuda()
-                    prob = prob.cuda()
-                action_prob = action*prob + (1.0-action)*(1.0-prob)
-
-                # action_prob = torch.gather(prob, 1, action)
-                t_rl_loss -= (torch.log(action_prob + eps)*advantage).sum(1)
-                # t_reg += lamb * (torch.log(prob)*prob)
-                # t_reg += lamb * (prob * action).norm(1) # increase sparsity? not sure if helps..
-                # t_val_loss += F.smooth_l1_loss(val, Variable(reward.data))
-
-                # can add in supervised loss here to force grounding
-
-            g_losses.append(g_loss.data.mean())
-            t_rl_losses.append(t_rl_loss.data.mean())
-            t_val_losses.append(t_val_loss.data.mean())
-
-            # backward
-            g_opt.zero_grad(); t_opt.zero_grad()
-            g_loss.mean().backward()
-            (t_rl_loss.mean() + t_val_loss.mean()).backward()
-            torch.nn.utils.clip_grad_norm(tourist.parameters(), 5)
-            torch.nn.utils.clip_grad_norm(guide.parameters(), 5)
-            g_opt.step(); t_opt.step()
-
-        g_acc = sum(g_accs)/len(g_accs)
+        train_accuracy = eval_epoch(X_train, actions_train, landmark_train, y_train,
+                               tourist, guide, args.batch_sz, args.cuda,
+                               t_opt=t_opt, g_opt=g_opt)
 
         if epoch % report_every == 0:
-            train_acc.append(g_acc)
-            logger.info('Guide Accuracy: {:.4f} | Guide loss: {:.4f} | Tourist loss: {:.4f} | Reward: {:.4f} | V: {:.4f}'.format( \
-                    g_acc, np.mean(g_losses), np.mean(t_rl_losses), np.mean(rewards.cpu().data.numpy()), np.mean(t_val_losses)))
+            logger.info('Guide Accuracy: {:.4f}'.format(
+                    train_accuracy*100))
 
-            val_accuracy = eval_epoch(X_valid, actions_valid, landmark_valid, y_valid, tourist, guide, args.batch_sz)
-            test_accuracy = eval_epoch(X_test, actions_test, landmark_test, y_test, tourist, guide, args.batch_sz)
+            val_accuracy = eval_epoch(X_valid, actions_valid, landmark_valid, y_valid,
+                                      tourist, guide, args.batch_sz, args.cuda)
+            test_accuracy = eval_epoch(X_test, actions_test, landmark_test, y_test,
+                                       tourist, guide, args.batch_sz, args.cuda)
 
             val_acc.append(val_accuracy)
             test_acc.append(test_accuracy)
@@ -395,7 +382,7 @@ if __name__ == '__main__':
                 tourist.save(os.path.join(exp_dir, 'tourist.pt'))
                 guide.save(os.path.join(exp_dir, 'guide.pt'))
                 best_val_acc = val_accuracy
-                best_train_acc = g_acc
+                best_train_acc = train_accuracy
                 best_test_acc = test_accuracy
 
     print(best_train_acc, best_val_acc, best_test_acc)

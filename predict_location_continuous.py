@@ -127,7 +127,6 @@ class LocationPredictor(nn.Module):
         self.T = T
         if self.goldstandard_features:
             self.goldstandard_emb = nn.Embedding(11, emb_sz)
-            self.obs_linear = nn.Linear((self.T+1)*emb_sz, (self.T+1)*emb_sz)
         if self.fasttext_features:
             self.fasttext_emb_linear = nn.Linear(300, emb_sz)
         if self.resnet_features:
@@ -136,23 +135,28 @@ class LocationPredictor(nn.Module):
 
         self.masc_fn = MASC(emb_sz)
         self.loss = nn.CrossEntropyLoss()
+        self.feat_mask = nn.ParameterList()
+        for _ in range(T+1):
+            self.feat_mask.append(nn.Parameter(torch.FloatTensor(1, emb_sz).normal_(0.0, 0.1)))
+
 
         if self.apply_masc:
-            self.action_emb = nn.Embedding(4, 32)
-            self.action_linear = nn.Linear(self.T*32, self.T*32)
+            self.action_emb = nn.Embedding(4, emb_sz)
+            self.action_mask = nn.Parameter(torch.FloatTensor(1, T, emb_sz).normal_(0.0, 0.1))
             self.extract_fns = nn.ModuleList()
             for _ in range(self.T):
-                self.extract_fns.append(nn.Linear(self.T*32, 9))
+                self.extract_fns.append(nn.Linear(emb_sz, 9))
 
     def forward(self, X, actions, landmarks, y):
         batch_size = y.size(0)
         if self.goldstandard_features:
             max_steps = X['goldstandard'].size(1)
-            emb = list()
+            embs = list()
             for step in range(max_steps):
-                emb.append(self.goldstandard_emb.forward(X['goldstandard'][:, step, :]).sum(dim=1))
-            goldstandard_emb = torch.cat(emb, 1)
-            goldstandard_emb = self.obs_linear(goldstandard_emb)
+                emb = self.goldstandard_emb.forward(X['goldstandard'][:, step, :]).sum(dim=1)
+                emb = emb * self.feat_mask[step]
+                embs.append(emb)
+            goldstandard_emb = sum(embs)
 
         if self.resnet_features:
             resnet_emb = self.resnet_emb_linear.forward(X['resnet'])
@@ -172,23 +176,23 @@ class LocationPredictor(nn.Module):
             emb = fasttext_emb
 
         l_emb = self.cbow_fn.forward(landmarks).permute(0, 3, 1, 2)
-        l_embs = [l_emb]
 
         if self.apply_masc:
             action_emb = self.action_emb.forward(actions)
-            concat_action_emb = action_emb.view(batch_size, -1)
-            action_out = self.action_linear(concat_action_emb)
+            action_emb *= self.action_mask
+            action_out = action_emb.sum(dim=1)
 
+            out = l_emb
             for j in range(self.T):
                 act_mask = self.extract_fns[j](action_out)
-                out = self.masc_fn.forward(l_embs[-1], act_mask)
-                l_embs.append(out)
+                out = self.masc_fn.forward(out, act_mask)
+                l_emb += out
         else:
             for j in range(self.T):
-                out = self.masc_fn.forward_no_masc(l_embs[-1])
-                l_embs.append(out)
+                out = self.masc_fn.forward_no_masc(l_emb)
+                l_emb += out
 
-        landmarks = torch.cat(l_embs, 1)
+        landmarks = l_emb
         landmarks = landmarks.resize(batch_size, landmarks.size(1), 16).transpose(1, 2)
 
         logits = torch.bmm(landmarks, emb.unsqueeze(-1)).squeeze(-1)
@@ -255,14 +259,6 @@ def create_batch(X, actions, landmarks, y, cuda=False):
                 landmark_batch[i, j, k, :len(landmarks[i][j][k])] = torch.LongTensor(landmarks[i][j][k])
 
     return to_variable((batch, torch.LongTensor(actions), landmark_batch, torch.LongTensor(y).unsqueeze(-1)), cuda=cuda)
-
-
-def batch_cosine(A, B):
-    batch_size = A.size(0)
-    resized_A = A.resize(batch_size*A.size(1), A.size(2))
-    expanded_B = B.unsqueeze(1).expand(batch_size, A.size(1), B.size(1))
-    resized_B = expanded_B.resize(batch_size*A.size(1), B.size(1))
-    return F.cosine_similarity(resized_A, resized_B, 1, 1e-6).resize(batch_size, A.size(1))
 
 
 def epoch(net, X, actions, landmarks, y, batch_sz, opt=None, shuffle=True, cuda=False):

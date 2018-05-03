@@ -1,4 +1,5 @@
 import copy
+import operator
 import os
 import json
 import random
@@ -56,13 +57,18 @@ def prediction_upperbound(seq_of_landmarks, goldstandard_features, neighborhood,
                     new_paths.append(path_new)
         paths = new_paths
 
-    correct, total = 0.0, 0.0
+    loc2cnt = dict()
     for path in paths:
         if all([l1 == l2 for l1, l2 in zip(path['seq_of_landmarks'], seq_of_landmarks)]):
-            if path['loc'][0] == loc[0] and path['loc'][1] == loc[1]:
-                correct += 1
-            total += 1
-    return correct/total
+            if (path['loc'][0], path['loc'][1]) in loc2cnt:
+                loc2cnt[(path['loc'][0], path['loc'][1])] += 1
+            else:
+                loc2cnt[(path['loc'][0], path['loc'][1])] = 1
+
+    # find maximum
+    selected_loc = max(loc2cnt.items(), key=operator.itemgetter(1))[0]
+    acc = float(selected_loc[0] == loc[0] and selected_loc[1] == loc[1])
+    return acc
 
 
 def process(configs, feature_loaders, num_steps, step_fn, num_actions=4):
@@ -94,7 +100,8 @@ def process(configs, feature_loaders, num_steps, step_fn, num_actions=4):
                     loc = step_fn(sampled_act, loc, boundaries)
 
             correct += prediction_upperbound(obs['goldstandard'], feature_loaders['goldstandard'],
-                                             neighborhood, boundaries, loc, step_fn=step_fn, num_actions=num_actions)
+                                             neighborhood, boundaries, loc,
+                                             step_fn=step_fn, num_actions=num_actions)
             cnt += 1
 
     return correct/cnt
