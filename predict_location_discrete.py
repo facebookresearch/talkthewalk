@@ -7,9 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-import numpy as np
 
-from torch.distributions import Bernoulli
 from torch.autograd import Variable
 from sklearn.utils import shuffle
 from matplotlib import pyplot as plt
@@ -86,38 +84,31 @@ def eval_epoch(X, actions, landmarks, y, tourist, guide, batch_sz, cuda, t_opt=N
 
 class Guide(nn.Module):
 
-    def __init__(self, in_vocab_sz, num_landmarks, embed_sz=64, apply_masc=True, T=2):
+    def __init__(self, in_vocab_sz, num_landmarks, apply_masc=True, T=2):
         super(Guide, self).__init__()
         self.in_vocab_sz = in_vocab_sz
         self.num_landmarks = num_landmarks
-        self.embed_sz = embed_sz
         self.T = T
         self.apply_masc = apply_masc
-        self.emb_map = CBoW(num_landmarks, embed_sz, init_std=0.1)
-        self.feature_emb = nn.ModuleList()
+        self.emb_map = CBoW(num_landmarks, in_vocab_sz, init_std=0.1)
+        self.feature_emb_fn = nn.Linear(in_vocab_sz, in_vocab_sz)
         self.feature_mask = nn.ParameterList()
         for channel in range(T+1):
-            self.feature_emb.append(nn.Linear(in_vocab_sz, embed_sz))
-            self.feature_mask.append(nn.Parameter(torch.FloatTensor(1, in_vocab_sz).fill_(1.0)))
+            self.feature_mask.append(nn.Parameter(torch.FloatTensor(1, in_vocab_sz, 1, 1).fill_(1.0)))
 
-
-        self.masc_fn = MASC(embed_sz, apply_masc=apply_masc)
+        self.masc_fn = MASC(in_vocab_sz, apply_masc=apply_masc)
         if self.apply_masc:
             self.action_emb = nn.ModuleList()
-            self.action_mask = nn.ParameterList()
             for i in range(T):
                 self.action_emb.append(nn.Linear(in_vocab_sz, 9))
-                self.action_mask.append(nn.Parameter(torch.FloatTensor(1, in_vocab_sz).fill_(1.0)))
 
-        self.act_lin = nn.Linear(embed_sz, 9)
+
+        self.act_lin = nn.Linear(in_vocab_sz, 9)
 
 
     def forward(self, message, landmarks):
-        f_msgs = list()
-        for k in range(self.T+1):
-            msg = message[0]
-            f_msgs.append(self.feature_emb[k].forward(msg))
-        feature_msg = torch.cat(f_msgs, 1)
+
+        feature_msg = self.feature_emb_fn(message[0])
         batch_size = message[0].size(0)
 
         l_emb = self.emb_map.forward(landmarks).permute(0, 3, 1, 2)
@@ -135,7 +126,7 @@ class Guide(nn.Module):
                 out = self.masc_fn.forward_no_masc(l_embs[-1])
                 l_embs.append(out)
 
-        landmarks = torch.cat(l_embs, 1)
+        landmarks = sum([m*emb for m, emb in zip(self.feature_mask, l_embs)])
         landmarks = landmarks.view(batch_size, landmarks.size(1), 16).transpose(1, 2)
 
         logits = torch.bmm(landmarks, feature_msg.unsqueeze(-1)).squeeze(-1)
@@ -147,7 +138,6 @@ class Guide(nn.Module):
         state = dict()
         state['in_vocab_sz'] = self.in_vocab_sz
         state['num_landmarks'] = self.num_landmarks
-        state['embed_sz'] = self.embed_sz
         state['parameters'] = self.state_dict()
         state['T'] = self.T
         state['apply_masc'] = self.apply_masc
@@ -156,7 +146,7 @@ class Guide(nn.Module):
     @classmethod
     def load(cls, path):
         state = torch.load(path)
-        guide = cls(state['in_vocab_sz'], state['num_landmarks'], embed_sz=state['embed_sz'], T=state['T'],
+        guide = cls(state['in_vocab_sz'], state['num_landmarks'], T=state['T'],
                     apply_masc=state['apply_masc'])
         guide.load_state_dict(state['parameters'])
         return guide
@@ -164,38 +154,35 @@ class Guide(nn.Module):
 
 class Tourist(nn.Module):
     def __init__(self, goldstandard_features, resnet_features, fasttext_features,
-                 emb_sz, vocab_sz, T=2, apply_masc=False):
+                 vocab_sz, T=2, apply_masc=False):
         super(Tourist, self).__init__()
         self.goldstandard_features = goldstandard_features
         self.resnet_features = resnet_features
         self.fasttext_features = fasttext_features
-        self.emb_sz = emb_sz
         self.T = T
         self.apply_masc = apply_masc
         self.vocab_sz = vocab_sz
 
         if self.goldstandard_features:
-            self.goldstandard_emb = nn.Embedding(11, emb_sz)
+            self.goldstandard_emb = nn.Embedding(11, vocab_sz)
         if self.fasttext_features:
-            self.fasttext_emb_linear = nn.Linear(300, emb_sz)
+            self.fasttext_emb_linear = nn.Linear(300, vocab_sz)
         if self.resnet_features:
-            self.resnet_emb_linear = nn.Linear(2048, emb_sz)
+            self.resnet_emb_linear = nn.Linear(2048, vocab_sz)
 
         self.num_embeddings = T+1
         self.feat_masks = nn.ParameterList()
         for _ in range(T+1):
-            self.feat_masks.append(nn.Parameter(torch.FloatTensor(1, emb_sz).normal_(0.0, 0.1)))
+            self.feat_masks.append(nn.Parameter(torch.FloatTensor(1, vocab_sz).normal_(0.0, 0.1)))
         if self.apply_masc:
-            self.action_emb = nn.Embedding(4, emb_sz)
+            self.action_emb = nn.Embedding(4, vocab_sz)
             self.num_embeddings += T
             self.act_masks = nn.ParameterList()
             for _ in range(T):
-                self.act_masks.append(nn.Parameter(torch.FloatTensor(1, emb_sz).normal_(0.0, 0.1)))
-
-        self.feat_comms = nn.Linear((T+1)*self.emb_sz, vocab_sz)
+                self.act_masks.append(nn.Parameter(torch.FloatTensor(1, vocab_sz).normal_(0.0, 0.1)))
 
         self.loss = nn.CrossEntropyLoss()
-        self.value_pred = nn.Linear(2*self.emb_sz, 1)
+        self.value_pred = nn.Linear((1+int(self.apply_masc))*self.vocab_sz, 1)
 
     def forward(self, X, actions, greedy=False):
         batch_size = actions.size(0)
@@ -218,7 +205,6 @@ class Tourist(nn.Module):
         probs = list()
 
         feat_embeddings = sum(feat_emb)
-        # feat_logits = self.feat_comms(feat_embeddings)
         feat_logits = feat_embeddings
         feat_prob = F.sigmoid(feat_logits).cpu()
         feat_msg = feat_prob.bernoulli().detach()
@@ -229,16 +215,14 @@ class Tourist(nn.Module):
         if self.apply_masc:
             act_embeddings = sum(act_emb)
             act_logits = act_embeddings
-            # act_logits = self.act_comms(act_embeddings)
             act_prob = F.sigmoid(act_logits).cpu()
             act_msg = act_prob.bernoulli().detach()
 
             probs.append(act_prob)
             comms.append(act_msg)
 
-        # emb = torch.cat(embeddings, 1)
         if self.apply_masc:
-            embeddings = torch.cat([feat_embeddings, act_embeddings], 1).resize(batch_size, 2*self.emb_sz)
+            embeddings = torch.cat([feat_embeddings, act_embeddings], 1).resize(batch_size, 2*self.vocab_sz)
         else:
             embeddings = feat_embeddings
         value = self.value_pred(embeddings)
@@ -250,7 +234,7 @@ class Tourist(nn.Module):
         state['goldstandard_features'] = self.goldstandard_features
         state['resnet_features'] = self.resnet_features
         state['fasttext_features'] = self.fasttext_features
-        state['emb_sz'] = self.emb_sz
+        state['vocab_sz'] = self.vocab_sz
         state['T'] = self.T
         state['apply_masc'] = self.apply_masc
         state['parameters'] = self.state_dict()
@@ -260,7 +244,7 @@ class Tourist(nn.Module):
     def load(cls, path):
         state = torch.load(path)
         tourist = cls(state['goldstandard_features'], state['resnet_features'], state['fasttext_features'],
-                      state['emb_sz'], 1000, T=state['T'], apply_masc=state['condition_on_action'])
+                      state['vocab_sz'], T=state['T'], apply_masc=state['condition_on_action'])
         tourist.load_state_dict(state['parameters'])
 
         return tourist
@@ -338,9 +322,9 @@ if __name__ == '__main__':
     if args.masc:
         in_vocab_sz += args.T*args.embed_sz
 
-    guide = Guide(args.vocab_sz, num_embeddings, embed_sz=args.embed_sz,
+    guide = Guide(args.vocab_sz, num_embeddings,
                   apply_masc=args.masc, T=args.T)
-    tourist = Tourist(args.goldstandard_features, args.resnet_features, args.fasttext_features, args.embed_sz, args.vocab_sz,
+    tourist = Tourist(args.goldstandard_features, args.resnet_features, args.fasttext_features, args.vocab_sz,
                       apply_masc=args.masc, T=args.T)
 
     if args.cuda:

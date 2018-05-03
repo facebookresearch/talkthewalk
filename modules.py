@@ -51,11 +51,12 @@ class MASC(nn.Module):
     def forward_no_masc(self, input):
         assert not self.apply_masc, "`apply_masc` needs to be set to False before you can apply this fn"
 
-        mask = torch.FloatTensor(1, 1, 3, 3).cuda().zero_()
+        mask = torch.FloatTensor(1, 1, 3, 3).zero_()
         mask[0, 0, 0, 1] = 1.0
         mask[0, 0, 1, 0] = 1.0
         mask[0, 0, 2, 1] = 1.0
         mask[0, 0, 1, 2] = 1.0
+
         weight = self.conv_weight * Variable(mask)
         return F.conv2d(input, weight, padding=1)
 

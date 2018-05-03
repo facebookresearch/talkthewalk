@@ -12,107 +12,6 @@ from data_loader import Landmarks, FasttextFeatures, ResnetFeatures, Goldstandar
 from utils import create_logger
 from modules import CBoW, MASC
 
-
-# class LocationPredictor(nn.Module):
-#
-#     def __init__(self, goldstandard_features, resnet_features, fasttext_features,
-#                  emb_sz, num_embeddings, T=2, apply_masc=True):
-#         super(LocationPredictor, self).__init__()
-#         self.goldstandard_features = goldstandard_features
-#         self.resnet_features = resnet_features
-#         self.fasttext_features = fasttext_features
-#         self.num_embeddings = num_embeddings
-#         self.emb_sz = emb_sz
-#         self.apply_masc = apply_masc
-#         self.T = T
-#         if self.goldstandard_features:
-#             self.goldstandard_emb = nn.Embedding(11, emb_sz)
-#         if self.fasttext_features:
-#             self.fasttext_emb_linear = nn.Linear(300, emb_sz)
-#         if self.resnet_features:
-#             self.resnet_emb_linear = nn.Linear(2048, emb_sz)
-#         self.cbow_fn = CBoW(num_embeddings, emb_sz, init_std=0.01)
-#
-#         self.masc_fn = MASC(emb_sz)
-#         self.loss = nn.CrossEntropyLoss()
-#
-#         if self.apply_masc:
-#             self.action_emb = nn.Embedding(4, 32)
-#             self.action_linear = nn.Linear(32, 9)
-#
-#     def forward(self, X, actions, landmarks, y):
-#         batch_size = y.size(0)
-#         if self.goldstandard_features:
-#             max_steps = X['goldstandard'].size(1)
-#             emb = list()
-#             for step in range(max_steps):
-#                 emb.append(self.goldstandard_emb.forward(X['goldstandard'][:, step, :]).sum(dim=1))
-#             goldstandard_emb = torch.cat(emb, 1)
-#
-#         if self.resnet_features:
-#             resnet_emb = self.resnet_emb_linear.forward(X['resnet'])
-#             resnet_emb = resnet_emb.sum(dim=1)
-#
-#         if self.fasttext_features:
-#             fasttext_emb = self.fasttext_emb_linear.forward(X['fasttext'])
-#             fasttext_emb = fasttext_emb.sum(dim=1)
-#
-#         if self.resnet_features and self.fasttext_features:
-#             emb = resnet_emb + fasttext_emb
-#         elif self.resnet_features:
-#             emb = resnet_emb
-#         elif self.goldstandard_features:
-#             emb = goldstandard_emb
-#         elif self.fasttext_features:
-#             emb = fasttext_emb
-#
-#         l_emb = self.cbow_fn.forward(landmarks).permute(0, 3, 1, 2)
-#         l_embs = [l_emb]
-#
-#         if self.apply_masc:
-#             action_emb = self.action_emb.forward(actions)
-#             action_out = self.action_linear(action_emb)
-#
-#             for j in range(self.T):
-#                 out = self.masc_fn.forward(l_embs[-1], action_out[:, j, :])
-#                 l_embs.append(out)
-#         else:
-#             for j in range(self.T):
-#                 out = self.masc_fn.forward_no_masc(l_embs[-1])
-#                 l_embs.append(out)
-#
-#         landmarks = torch.cat(l_embs, 1)
-#         landmarks = landmarks.resize(batch_size, landmarks.size(1), 16).transpose(1, 2)
-#
-#         logits = torch.bmm(landmarks, emb.unsqueeze(-1)).squeeze(-1)
-#         prob = F.softmax(logits, dim=1)
-#
-#         y_true = (y[:, 0]*4 + y[:, 1]).squeeze()
-#         loss = self.loss(prob, y_true)
-#         acc = sum([1.0 for pred, target in zip(prob.max(1)[1].data.cpu().numpy(), y_true.data.cpu().numpy()) if pred == target])/batch_size
-#         return loss, acc, prob
-#
-#     def save(self, path):
-#         state = dict()
-#         state['goldstandard_features'] = self.goldstandard_features
-#         state['resnet_features'] = self.resnet_features
-#         state['fasttext_features'] = self.fasttext_features
-#         state['emb_sz'] = self.emb_sz
-#         state['num_embeddings'] = self.num_embeddings
-#         state['T'] = self.T
-#         state['apply_masc'] = self.apply_masc
-#         state['parameters'] = self.state_dict()
-#         torch.save(state, path)
-#
-#     @classmethod
-#     def load(cls, path):
-#         state = torch.load(path)
-#         model = cls(state['goldstandard_features'], state['resnet_features'], state['fasttext_features'],
-#                     state['emb_sz'], state['num_embeddings'], T=state['T'],
-#                     apply_masc=state['apply_masc'])
-#         model.load_state_dict(state['parameters'])
-#         return model
-
 class LocationPredictor(nn.Module):
 
     def __init__(self, goldstandard_features, resnet_features, fasttext_features,
@@ -136,9 +35,10 @@ class LocationPredictor(nn.Module):
         self.masc_fn = MASC(emb_sz)
         self.loss = nn.CrossEntropyLoss()
         self.feat_mask = nn.ParameterList()
+        self.lemb_mask = nn.ParameterList()
         for _ in range(T+1):
             self.feat_mask.append(nn.Parameter(torch.FloatTensor(1, emb_sz).normal_(0.0, 0.1)))
-
+            self.lemb_mask.append(nn.Parameter(torch.FloatTensor(1, emb_sz, 1, 1)).normal_(0.0, 0.1))
 
         if self.apply_masc:
             self.action_emb = nn.Embedding(4, emb_sz)
@@ -176,23 +76,23 @@ class LocationPredictor(nn.Module):
             emb = fasttext_emb
 
         l_emb = self.cbow_fn.forward(landmarks).permute(0, 3, 1, 2)
+        l_embs = [l_emb]
 
         if self.apply_masc:
             action_emb = self.action_emb.forward(actions)
             action_emb *= self.action_mask
             action_out = action_emb.sum(dim=1)
 
-            out = l_emb
             for j in range(self.T):
                 act_mask = self.extract_fns[j](action_out)
-                out = self.masc_fn.forward(out, act_mask)
-                l_emb += out
+                out = self.masc_fn.forward(l_embs[-1], act_mask)
+                l_emb.append(out)
         else:
             for j in range(self.T):
                 out = self.masc_fn.forward_no_masc(l_emb)
                 l_emb += out
 
-        landmarks = l_emb
+        landmarks = sum([m*emb for m, emb in zip(self.lemb_mask, l_embs)])
         landmarks = landmarks.resize(batch_size, landmarks.size(1), 16).transpose(1, 2)
 
         logits = torch.bmm(landmarks, emb.unsqueeze(-1)).squeeze(-1)
