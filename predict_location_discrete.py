@@ -259,7 +259,6 @@ if __name__ == '__main__':
     parser.add_argument('--masc', action='store_true')
     parser.add_argument('--T', type=int, default=2)
     parser.add_argument('--vocab-sz', type=int, default=500)
-    parser.add_argument('--embed-sz', type=int, default=128)
     parser.add_argument('--batch-sz', type=int, default=128)
     parser.add_argument('--num-epochs', type=int, default=500)
     parser.add_argument('--exp-name', type=str, default='test')
