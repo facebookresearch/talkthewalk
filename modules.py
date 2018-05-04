@@ -56,7 +56,10 @@ class MASC(nn.Module):
 
         mask = Variable(mask)
         if input.is_cuda:
-            mask.cuda()
+            mask = mask.cuda()
+
+        print(self.conv_weight.is_cuda)
+        print(mask.is_cuda)
 
         weight = self.conv_weight * mask
         return F.conv2d(input, weight, padding=1)
