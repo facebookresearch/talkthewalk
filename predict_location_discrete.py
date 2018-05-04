@@ -316,10 +316,7 @@ if __name__ == '__main__':
     num_embeddings = len(landmark_map.types)+1
     if args.softmax == 'location':
         num_embeddings = len(landmark_map.global_coord_to_idx)
-    # create models
-    in_vocab_sz = (args.T+1)*args.embed_sz
-    if args.masc:
-        in_vocab_sz += args.T*args.embed_sz
+
 
     guide = Guide(args.vocab_sz, num_embeddings,
                   apply_masc=args.masc, T=args.T)
