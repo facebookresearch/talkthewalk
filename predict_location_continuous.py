@@ -38,7 +38,7 @@ class LocationPredictor(nn.Module):
         self.lemb_mask = nn.ParameterList()
         for _ in range(T+1):
             self.feat_mask.append(nn.Parameter(torch.FloatTensor(1, emb_sz).normal_(0.0, 0.1)))
-            self.lemb_mask.append(nn.Parameter(torch.FloatTensor(1, emb_sz, 1, 1)).normal_(0.0, 0.1))
+            self.lemb_mask.append(nn.Parameter(torch.FloatTensor(1, emb_sz, 1, 1).normal_(0.0, 0.1)))
 
         if self.apply_masc:
             self.action_emb = nn.Embedding(4, emb_sz)
@@ -86,11 +86,11 @@ class LocationPredictor(nn.Module):
             for j in range(self.T):
                 act_mask = self.extract_fns[j](action_out)
                 out = self.masc_fn.forward(l_embs[-1], act_mask)
-                l_emb.append(out)
+                l_embs.append(out)
         else:
             for j in range(self.T):
                 out = self.masc_fn.forward_no_masc(l_emb)
-                l_emb += out
+                l_embs.append(out)
 
         landmarks = sum([m*emb for m, emb in zip(self.lemb_mask, l_embs)])
         landmarks = landmarks.resize(batch_size, landmarks.size(1), 16).transpose(1, 2)
