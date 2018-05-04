@@ -45,9 +45,6 @@ class MASC(nn.Module):
             out[i, :, :, :] = F.conv2d(selected_inp, weight, padding=1).squeeze(0)
         return out
 
-    def forward_speedup(self):
-        pass
-
     def forward_no_masc(self, input):
         assert not self.apply_masc, "`apply_masc` needs to be set to False before you can apply this fn"
 
@@ -57,7 +54,11 @@ class MASC(nn.Module):
         mask[0, 0, 2, 1] = 1.0
         mask[0, 0, 1, 2] = 1.0
 
-        weight = self.conv_weight * Variable(mask)
+        mask = Variable(mask)
+        if input.is_cuda:
+            mask.cuda()
+
+        weight = self.conv_weight * mask
         return F.conv2d(input, weight, padding=1)
 
 
