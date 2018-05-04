@@ -365,7 +365,7 @@ if __name__ == '__main__':
                 best_train_acc = train_accuracy
                 best_test_acc = test_accuracy
 
-    print(best_train_acc, best_val_acc, best_test_acc)
+    logger.info('%.2f, %.2f, %.2f' % (best_train_acc*100, best_val_acc*100, best_test_acc*100))
 
     plt.plot(range(len(train_acc)), train_acc, label='train')
     plt.plot(range(len(val_acc)), val_acc, label='valid')
