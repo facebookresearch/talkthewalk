@@ -126,7 +126,7 @@ class Guide(nn.Module):
                 out = self.masc_fn.forward_no_masc(landmark_embs[-1])
                 landmark_embs.append(out)
 
-        landmarks = sum([gate*emb for gate, emb in zip(self.landmark_write_gate, landmark_embs)])
+        landmarks = sum([F.sigmoid(gate)*emb for gate, emb in zip(self.landmark_write_gate, landmark_embs)])
         landmarks = landmarks.view(batch_size, landmarks.size(1), 16).transpose(1, 2)
 
         logits = torch.bmm(landmarks, msg_obs.unsqueeze(-1)).squeeze(-1)
@@ -171,15 +171,16 @@ class Tourist(nn.Module):
             self.resnet_emb_linear = nn.Linear(2048, vocab_sz)
 
         self.num_embeddings = T+1
-        self.feat_masks = nn.ParameterList()
+        self.obs_write_gate = nn.ParameterList()
         for _ in range(T+1):
-            self.feat_masks.append(nn.Parameter(torch.FloatTensor(1, vocab_sz).normal_(0.0, 0.1)))
+            self.obs_write_gate.append(nn.Parameter(torch.FloatTensor(1, vocab_sz).normal_(0.0, 0.1)))
+
         if self.apply_masc:
             self.action_emb = nn.Embedding(4, vocab_sz)
             self.num_embeddings += T
-            self.act_masks = nn.ParameterList()
+            self.act_write_gate = nn.ParameterList()
             for _ in range(T):
-                self.act_masks.append(nn.Parameter(torch.FloatTensor(1, vocab_sz).normal_(0.0, 0.1)))
+                self.act_write_gate.append(nn.Parameter(torch.FloatTensor(1, vocab_sz).normal_(0.0, 0.1)))
 
         self.loss = nn.CrossEntropyLoss()
         self.value_pred = nn.Linear((1+int(self.apply_masc))*self.vocab_sz, 1)
@@ -191,14 +192,14 @@ class Tourist(nn.Module):
             max_steps = X['goldstandard'].size(1)
             for step in range(max_steps):
                 emb = self.goldstandard_emb.forward(X['goldstandard'][:, step, :]).sum(dim=1)
-                emb = emb * self.feat_masks[step]
+                emb = emb * F.sigmoid(self.obs_write_gate[step])
                 feat_emb.append(emb)
 
         act_emb = list()
         if self.apply_masc:
             for step in range(self.T):
                 emb = self.action_emb.forward(actions[:, step])
-                emb = emb * self.act_masks[step]
+                emb = emb * F.sigmoid(self.act_write_gate[step])
                 act_emb.append(emb)
 
         comms = list()
