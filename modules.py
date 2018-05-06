@@ -34,15 +34,16 @@ class MASC(nn.Module):
         self.conv_weight.data.uniform_(-std, std)
         self.apply_masc = apply_masc
 
-    def forward(self, inp, action_out):
+    def forward(self, inp, action_out, current_step=None, Ts=None):
         batch_size = inp.size(0)
         out = inp.clone().zero_()
 
         for i in range(batch_size):
-            selected_inp = inp[i, :, :, :].unsqueeze(0)
-            mask = F.softmax(action_out[i], dim=0).view(1, 1, 3, 3)
-            weight = mask * self.conv_weight
-            out[i, :, :, :] = F.conv2d(selected_inp, weight, padding=1).squeeze(0)
+            if Ts is None or current_step < Ts[i]:
+                selected_inp = inp[i, :, :, :].unsqueeze(0)
+                mask = F.softmax(action_out[i], dim=0).view(1, 1, 3, 3)
+                weight = mask * self.conv_weight
+                out[i, :, :, :] = F.conv2d(selected_inp, weight, padding=1).squeeze(0)
         return out
 
     def forward_no_masc(self, input):

@@ -91,10 +91,10 @@ class Guide(nn.Module):
         self.T = T
         self.apply_masc = apply_masc
         self.emb_map = CBoW(num_landmarks, in_vocab_sz, init_std=0.1)
-        self.feature_emb_fn = nn.Linear(in_vocab_sz, in_vocab_sz)
-        self.feature_mask = nn.ParameterList()
-        for channel in range(T+1):
-            self.feature_mask.append(nn.Parameter(torch.FloatTensor(1, in_vocab_sz, 1, 1).fill_(1.0)))
+        self.obs_emb_fn = nn.Linear(in_vocab_sz, in_vocab_sz)
+        self.landmark_write_gate = nn.ParameterList()
+        for _ in range(T+1):
+            self.landmark_write_gate.append(nn.Parameter(torch.FloatTensor(1, in_vocab_sz, 1, 1).fill_(1.0)))
 
         self.masc_fn = MASC(in_vocab_sz, apply_masc=apply_masc)
         if self.apply_masc:
@@ -108,28 +108,28 @@ class Guide(nn.Module):
 
     def forward(self, message, landmarks):
 
-        feature_msg = self.feature_emb_fn(message[0])
+        msg_obs = self.obs_emb_fn(message[0])
         batch_size = message[0].size(0)
 
-        l_emb = self.emb_map.forward(landmarks).permute(0, 3, 1, 2)
-        l_embs = [l_emb]
+        landmark_emb = self.emb_map.forward(landmarks).permute(0, 3, 1, 2)
+        landmark_embs = [landmark_emb]
 
         if self.apply_masc:
             for j in range(self.T):
                 act_msg = message[1]
                 action_out = self.action_emb[j](act_msg)
 
-                out = self.masc_fn.forward(l_embs[-1], action_out)
-                l_embs.append(out)
+                out = self.masc_fn.forward(landmark_embs[-1], action_out)
+                landmark_embs.append(out)
         else:
             for j in range(self.T):
-                out = self.masc_fn.forward_no_masc(l_embs[-1])
-                l_embs.append(out)
+                out = self.masc_fn.forward_no_masc(landmark_embs[-1])
+                landmark_embs.append(out)
 
-        landmarks = sum([m*emb for m, emb in zip(self.feature_mask, l_embs)])
+        landmarks = sum([gate*emb for gate, emb in zip(self.landmark_write_gate, landmark_embs)])
         landmarks = landmarks.view(batch_size, landmarks.size(1), 16).transpose(1, 2)
 
-        logits = torch.bmm(landmarks, feature_msg.unsqueeze(-1)).squeeze(-1)
+        logits = torch.bmm(landmarks, msg_obs.unsqueeze(-1)).squeeze(-1)
         prob = F.softmax(logits, dim=1)
         return prob
 

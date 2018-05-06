@@ -32,13 +32,14 @@ class LocationPredictor(nn.Module):
             self.resnet_emb_linear = nn.Linear(2048, emb_sz)
         self.cbow_fn = CBoW(num_embeddings, emb_sz, init_std=0.01)
 
-        self.masc_fn = MASC(emb_sz)
+        self.masc_fn = MASC(emb_sz, apply_masc=apply_masc)
         self.loss = nn.CrossEntropyLoss()
-        self.feat_mask = nn.ParameterList()
-        self.lemb_mask = nn.ParameterList()
+
+        self.obs_write_gate = nn.ParameterList()
+        self.landmark_write_gate = nn.ParameterList()
         for _ in range(T+1):
-            self.feat_mask.append(nn.Parameter(torch.FloatTensor(1, emb_sz).normal_(0.0, 0.1)))
-            self.lemb_mask.append(nn.Parameter(torch.FloatTensor(1, emb_sz, 1, 1).normal_(0.0, 0.1)))
+            self.obs_write_gate.append(nn.Parameter(torch.FloatTensor(1, emb_sz).normal_(0.0, 0.1)))
+            self.landmark_write_gate.append(nn.Parameter(torch.FloatTensor(1, emb_sz, 1, 1).normal_(0.0, 0.1)))
 
         if self.apply_masc:
             self.action_emb = nn.Embedding(4, emb_sz)
@@ -54,7 +55,7 @@ class LocationPredictor(nn.Module):
             embs = list()
             for step in range(max_steps):
                 emb = self.goldstandard_emb.forward(X['goldstandard'][:, step, :]).sum(dim=1)
-                emb = emb * self.feat_mask[step]
+                emb = emb * F.sigmoid(self.obs_write_gate[step])
                 embs.append(emb)
             goldstandard_emb = sum(embs)
 
@@ -92,7 +93,7 @@ class LocationPredictor(nn.Module):
                 out = self.masc_fn.forward_no_masc(l_emb)
                 l_embs.append(out)
 
-        landmarks = sum([m*emb for m, emb in zip(self.lemb_mask, l_embs)])
+        landmarks = sum([F.sigmoid(gate)*emb for gate, emb in zip(self.landmark_write_gate, l_embs)])
         landmarks = landmarks.resize(batch_size, landmarks.size(1), 16).transpose(1, 2)
 
         logits = torch.bmm(landmarks, emb.unsqueeze(-1)).squeeze(-1)
