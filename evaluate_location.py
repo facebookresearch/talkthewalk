@@ -6,82 +6,10 @@ import torch
 import copy
 import time
 
-from torch.autograd import Variable
-from data_loader import create_obs_dict, Landmarks, load_features, FasttextFeatures, GoldstandardFeatures, ResnetFeatures, load_data_multiple_step, step_agnostic, step_aware
+from data_loader import create_obs_dict, Landmarks, load_features, FasttextFeatures, GoldstandardFeatures, ResnetFeatures, step_aware
 from predict_location_continuous import create_batch, LocationPredictor
 from predict_location_discrete import Tourist, Guide
 
-
-def evaluate(configs, tourist, guide, landmark_map, feature_loaders, random_walk=True):
-    tourist.cuda()
-    guide.cuda()
-    max_steps = tourist.max_steps
-    print(max_steps)
-    correct, total = 0.0, 0.0
-
-    for config in configs:
-        neighborhood = config['neighborhood']
-        boundaries = config['boundaries']
-        target_loc = config['target_location']
-
-        landmarks, target_index = landmark_map.get_landmarks_2d(config['neighborhood'], boundaries, target_loc)
-
-        flat_target_index = target_index[0]*4 + target_index[1]
-
-        max_eval = 3
-        loc = [boundaries[0] + random.randint(0, 3), boundaries[1] + random.randint(0, 3), 0]
-        feature_list = {k: [feature_loaders[k].get(config['neighborhood'], loc)] for k in feature_loaders.keys()}
-        action_list = []
-        locations = [loc]
-        predicted = list()
-
-
-        for _ in range(150):
-            if len(action_list) == max_steps - 1:
-                features = {k: [v] for k, v in feature_list.items()}
-                if len(action_list) == 0:
-                    actions = [[0]]
-                else:
-                    actions = [action_list]
-
-                y_batch = [[locations[0][0]-boundaries[0], locations[0][1] - boundaries[1]]]
-                X_batch, action_batch, landmark_batch, y_batch = create_batch(features, actions, [landmarks], y_batch, cuda=True)
-
-                t_comms, t_probs, t_val = tourist(X_batch, action_batch)
-                prob = guide(t_comms, landmark_batch)
-
-
-                sampled_index = torch.multinomial(prob, 1)
-                if sampled_index == flat_target_index:
-                    predicted.append(locations[0])
-                    if locations[0][0] == target_loc[0] and locations[0][1] == target_loc[1]:
-                        correct += 1
-                        break
-                    else:
-                        max_eval -= 1
-                        if max_eval <= 0:
-                            break
-
-            if random_walk:
-                act = random.randint(0, 3)
-                action_list.append(act)
-                loc = step_agnostic(act, loc, boundaries)
-                locations.append(loc)
-            else:
-                sampled_x, sampled_y = config['boundaries'][0] + random.randint(0, 3), config['boundaries'][
-                    1] + random.randint(0, 3)
-
-            for k in feature_loaders.keys():
-                feature_list[k].append(feature_loaders[k].get(config['neighborhood'], loc))
-
-            if len(action_list) > max_steps - 1:
-                feature_list = {k: feature_list[k][1:] for k in feature_loaders.keys()}
-                action_list = action_list[1:]
-                locations = locations[1:]
-
-        total += 1.
-
-    return ((correct / total) * 100)
 
 landmarks = {}
 
@@ -96,15 +24,10 @@ def get_landmarks(neighborhood, boundaries):
     return landmark_list
 
 
-def evaluate_and_log(configs, tourist, guide, landmark_map, feature_loaders, random_walk=True, log_file='log.json'):
-    tourist.cuda()
-    guide.cuda()
-    print(tourist.emb_sz)
-    print(tourist.vocab_sz)
-    print(guide.embed_sz)
-
-    max_steps = tourist.max_steps
+def evaluate(configs, predict_location_fn, landmark_map, feature_loaders, random_walk=True, cuda=False):
+    T = tourist.T
     correct, total = 0.0, 0.0
+    n_actions = 0
     log = []
 
     for config in configs:
@@ -131,8 +54,8 @@ def evaluate_and_log(configs, tourist, guide, landmark_map, feature_loaders, ran
         entry['start_location'] = copy.deepcopy(loc)
         t = time.time()
 
-        for _ in range(150):
-            if len(action_list) == max_steps - 1:
+        for step in range(150):
+            if len(action_list) == T:
                 features = {k: [v] for k, v in feature_list.items()}
                 if len(action_list) == 0:
                     actions = [[0]]
@@ -140,10 +63,9 @@ def evaluate_and_log(configs, tourist, guide, landmark_map, feature_loaders, ran
                     actions = [action_list]
 
                 y_batch = [[locations[0][0]-boundaries[0], locations[0][1] - boundaries[1]]]
-                X_batch, action_batch, landmark_batch, y_batch = create_batch(features, actions, [landmarks], y_batch, cuda=True)
+                X_batch, action_batch, landmark_batch, y_batch = create_batch(features, actions, [landmarks], y_batch, cuda=cuda)
 
-                t_comms, t_probs, t_val = tourist(X_batch, action_batch)
-                prob = guide(t_comms, landmark_batch)
+                prob, t_comms = predict_location_fn(X_batch, action_batch, landmark_batch)
                 entry['dialog'].append({'id': 'Tourist', 'episode_done': False, 'text': ''.join(['%0.0f' % x for x in t_comms[0].cpu().data.numpy()[0, :]]), 'time': t})
                 t += 1
 
@@ -156,13 +78,15 @@ def evaluate_and_log(configs, tourist, guide, landmark_map, feature_loaders, ran
                 entry['dialog'].append({'id': 'Guide', 'episode_done': False, 'text': prob_array})
                 t += 1
 
-                sampled_index = torch.multinomial(prob, 1)
+                # sampled_index = torch.multinomial(prob, 1)
+                _, sampled_index = torch.max(prob, 1)
                 if sampled_index == flat_target_index:
                     entry['dialog'].append({'id': 'Guide', 'episode_done': False, 'text': 'EVALUATE_LOCATION', 'time': t})
                     t += 1
                     predicted.append(locations[0])
                     if locations[0][0] == target_loc[0] and locations[0][1] == target_loc[1]:
                         correct += 1
+                        n_actions += step
                         break
                     else:
                         max_eval -= 1
@@ -182,16 +106,12 @@ def evaluate_and_log(configs, tourist, guide, landmark_map, feature_loaders, ran
                 entry['dialog'].append({'id': 'Tourist', 'episode_done': False, 'text': 'ACTION:FORWARD', 'time': t})
                 t+=1
 
-                # loc = step_agnostic(act, loc, boundaries)
                 locations.append(loc)
-            else:
-                sampled_x, sampled_y = config['boundaries'][0] + random.randint(0, 3), config['boundaries'][
-                    1] + random.randint(0, 3)
 
             for k in feature_loaders.keys():
                 feature_list[k].append(feature_loaders[k].get(config['neighborhood'], loc))
 
-            if len(action_list) > max_steps - 1:
+            if len(action_list) > T:
                 feature_list = {k: feature_list[k][1:] for k in feature_loaders.keys()}
                 action_list = action_list[1:]
                 locations = locations[1:]
@@ -199,106 +119,11 @@ def evaluate_and_log(configs, tourist, guide, landmark_map, feature_loaders, ran
         total += 1.
         log.append(entry)
 
+    acc = ((correct / total) * 100)
+    avg_n_actions = n_actions/correct
 
-    with open(log_file, 'w') as f:
-        json.dump(log, f)
+    return acc, log, avg_n_actions
 
-    return ((correct / total) * 100)
-
-
-def evaluate_location_predictor(configs, net, landmark_map, feature_loaders, random_walk=True):
-    net.cuda()
-    max_steps = net.max_steps
-    correct, total = 0.0, 0.0
-    accuracy = 0.0
-
-    for config in configs:
-        neighborhood = config['neighborhood']
-        min_x = config['boundaries'][0]
-        min_y = config['boundaries'][1]
-        target_x = config['target_location'][0]
-        target_y = config['target_location'][1]
-
-        landmarks, target_index = landmark_map.get_landmarks_2d(config['neighborhood'], min_x,
-                                                                min_y, target_x, target_y)
-
-        flat_target_index = target_index[0]*4 + target_index[1]
-
-        max_eval = 3
-        sampled_x, sampled_y = min_x + random.randint(0, 3), min_y + random.randint(0, 3)
-        steps = [(0, 1), (0, -1), (1, 0), (-1, 0)]
-        feature_list = {k: [feature_loaders[k].get(config['neighborhood'], sampled_x, sampled_y)] for k in feature_loaders.keys()}
-        action_list = []
-        locations = [(sampled_x, sampled_y)]
-        predicted = list()
-
-        # obs = {k: list() for k in feature_loaders.keys()}
-        # actions = list()
-        # sampled_x, sampled_y = target_x, target_y
-        # for p in range(max_steps):
-        #     for k, feature_loader in feature_loaders.items():
-        #         obs[k].append(feature_loader.get(neighborhood, sampled_x, sampled_y))
-        #
-        #     if p != max_steps - 1:
-        #         sampled_act = random.randint(0, 3)
-        #         actions.append(sampled_act)
-        #         step = [(0, 1), (0, -1), (1, 0), (-1, 0)][sampled_act]
-        #         sampled_x = max(min(sampled_x + step[0], min_x + 3), min_x)
-        #         sampled_y = max(min(sampled_y + step[1], min_y + 3), min_y)
-        #
-        # X = {k: [v] for k, v in obs.items()}
-        # X_batch, action_batch, landmark_batch, y_batch = create_batch(X, [actions], [landmarks], [target_index],
-        #                                                               cuda=True)
-        # _, acc, prob = net.forward(X_batch, action_batch, landmark_batch, y_batch)
-        # accuracy += acc
-
-
-        for _ in range(150):
-            if len(action_list) == max_steps - 1:
-                features = {k: [v] for k, v in feature_list.items()}
-                if len(action_list) == 0:
-                    actions = [[0]]
-                else:
-                    actions = [action_list]
-
-                y_batch = [[locations[0][0]-min_x, locations[0][1] - min_y]]
-                X_batch, action_batch, landmark_batch, y_batch = create_batch(features, actions, [landmarks], y_batch, cuda=True)
-
-                _, acc, prob = net.forward(X_batch, action_batch, landmark_batch, y_batch)
-                accuracy += acc
-
-                sampled_index = torch.multinomial(prob, 1)
-                if sampled_index == flat_target_index:
-                    predicted.append(locations[0])
-                    if locations[0] == (target_x, target_y):
-                        correct += 1
-                        break
-                    else:
-                        max_eval -= 1
-                        if max_eval <= 0:
-                            break
-
-            if random_walk:
-                act = random.randint(0, 3)
-                action_list.append(act)
-                sampled_x = min(max(sampled_x + steps[act][0], config['boundaries'][0]), config['boundaries'][0] + 3)
-                sampled_y = min(max(sampled_y + steps[act][1], config['boundaries'][1]), config['boundaries'][1] + 3)
-                locations.append((sampled_x, sampled_y))
-            else:
-                sampled_x, sampled_y = config['boundaries'][0] + random.randint(0, 3), config['boundaries'][
-                    1] + random.randint(0, 3)
-
-            for k in feature_loaders.keys():
-                feature_list[k].append(feature_loaders[k].get(config['neighborhood'], sampled_x, sampled_y))
-
-            if len(action_list) > max_steps - 1:
-                feature_list = {k: feature_list[k][1:] for k in feature_loaders.keys()}
-                action_list = action_list[1:]
-                locations = locations[1:]
-
-        total += 1.
-
-    return ((correct / total) * 100)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -312,10 +137,10 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     print(args)
+
     # Load data
     neighborhoods = ['fidi', 'hellskitchen', 'williamsburg', 'uppereast', 'eastvillage']
     landmark_map = Landmarks(neighborhoods, include_empty_corners=True)
-    print(landmark_map.itos)
 
     data_dir = './data'
     feature_loaders = dict()
@@ -337,20 +162,27 @@ if __name__ == '__main__':
     if args.predloc_model is not None:
         net = LocationPredictor.load(args.predloc_model)
 
-        train_acc = evaluate_location_predictor(train_configs, net, landmark_map, feature_loaders)
-        valid_acc = evaluate_location_predictor(valid_configs, net, landmark_map, feature_loaders)
-        test_acc = evaluate_location_predictor(test_configs, net, landmark_map, feature_loaders)
-        print(train_acc, valid_acc, test_acc)
+        def _predict_location():
+            pass
+
     else:
         tourist = Tourist.load(args.tourist_model)
         guide = Guide.load(args.guide_model)
+        if args.cuda:
+            tourist = tourist.cuda()
+            guide = guide.cuda()
 
-        # train_acc = evaluate_and_log(train_configs, tourist, guide, landmark_map, feature_loaders)
-        # valid_acc = evaluate(valid_configs, tourist, guide, landmark_map, feature_loaders)
-        # print(valid_acc)
-        test_acc = evaluate_and_log(test_configs, tourist, guide, landmark_map, feature_loaders)
-        print(test_acc)
-        # print(train_acc, valid_acc, test_acc)
+        def _predict_location(X_batch, action_batch, landmark_batch):
+            t_comms, t_probs, t_val = tourist(X_batch, action_batch)
+            if args.cuda:
+                t_comms = [x.cuda() for x in t_comms]
+            prob = guide(t_comms, landmark_batch)
+            return prob, t_comms
+
+    train_acc, train_log, train_avg_actions = evaluate(train_configs, _predict_location, landmark_map, feature_loaders, cuda=args.cuda)
+    print(train_acc, train_avg_actions)
+
+
 
 
 

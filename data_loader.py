@@ -14,10 +14,11 @@ class Landmarks(object):
 
     def __init__(self, neighborhoods, include_empty_corners=False):
         super(Landmarks, self).__init__()
-        self.coord_to_idx, self.idx_to_coord, self.landmarks, self.types = {}, {}, {}, set([])
-
-        self.global_coord_to_idx = dict()
-        self.idx_to_global_coord = list()
+        self.coord_to_landmarks = dict()
+        self.include_empty_corners = include_empty_corners
+        self.i2landmark = ['Coffee Shop', 'Shop', 'Restaurant', 'Bank', 'Subway',
+                           'Playfield', 'Theater', 'Bar', 'Hotel', 'Empty']
+        self.landmark2i = {value: index for  index, value in enumerate(self.i2landmark)}
 
         self.boundaries = dict()
         self.boundaries['hellskitchen'] = [3, 3]
@@ -27,104 +28,62 @@ class Landmarks(object):
         self.boundaries['uppereast'] = [3, 3]
 
         for neighborhood in neighborhoods:
-            data = json.load(open(os.path.join(data_dir, "{}_map.json".format(neighborhood))))
-            self.landmarks[neighborhood] = {}
-            self.coord_to_idx[neighborhood] = {}
-            self.idx_to_coord[neighborhood] = []
+            self.coord_to_landmarks[neighborhood] = [[[] for _ in range(self.boundaries[neighborhood][1]*2 + 4)]
+                                                     for _ in range(self.boundaries[neighborhood][0]*2 + 4)]
+            landmarks = json.load(open(os.path.join(data_dir, "{}_map.json".format(neighborhood))))
+            for landmark in landmarks:
+                coord = self.transform_map_coordinates(landmark)
+                landmark_idx = self.landmark2i[landmark['type']]
+                self.coord_to_landmarks[neighborhood][coord[0]][coord[1]].append(landmark_idx)
 
-            x_offset = {"NW": 0, "SW": 0, "NE": 1, "SE": 1}
-            y_offset = {"NW": 1, "SW": 0, "NE": 1, "SE": 0}
 
-            for d in data:
-                coord = (d['x']*2 + x_offset[d['orientation']], d['y']*2 + y_offset[d['orientation']])
-                if coord not in self.coord_to_idx[neighborhood]:
-                    self.coord_to_idx[neighborhood][coord] = len(self.idx_to_coord[neighborhood])
-                    self.idx_to_coord[neighborhood].append(coord)
-                    self.landmarks[neighborhood][coord] = []
-                self.landmarks[neighborhood][coord].append(d['type'])
-                self.types.add(d['type'])
+    def transform_map_coordinates(self, landmark):
+        x_offset = {"NW": 0, "SW": 0, "NE": 1, "SE": 1}
+        y_offset = {"NW": 1, "SW": 0, "NE": 1, "SE": 0}
 
-            if include_empty_corners:
-                self.types.add("Empty")
-                for i in range(self.boundaries[neighborhood][0]*2 + 4):
-                    for j in range(self.boundaries[neighborhood][1] * 2 + 4):
-                        self.global_coord_to_idx[(neighborhood, i, j)]= len(self.idx_to_global_coord)
-                        self.idx_to_global_coord.append((neighborhood, i, j))
-                        coord = (i, j)
-                        if coord not in self.landmarks[neighborhood]:
-                            self.landmarks[neighborhood][coord] = ["Empty"]
-                            self.coord_to_idx[neighborhood][coord] = len(self.idx_to_coord[neighborhood])
-                            self.idx_to_coord[neighborhood].append(coord)
+        coord = (landmark['x'] * 2 + x_offset[landmark['orientation']],
+                 landmark['y'] * 2 + y_offset[landmark['orientation']])
+        return coord
 
-        self.itos = list(self.types)
-        self.stoi = {k:i for i, k in enumerate(self.itos)}
-
-    def has_landmarks(self, neighborhood, x, y):
-        return (x, y) in self.coord_to_idx[neighborhood]
-
-    def get_landmarks(self, neighborhood, min_x, min_y, x, y):
-        assert (x, y) in self.coord_to_idx[neighborhood], "x, y coordinates do not have landmarks"
-        landmarks = list()
-        label_index = None
-        k = 0
-        for coord in self.idx_to_coord[neighborhood]:
-            if x == coord[0] and y == coord[1]:
-                label_index = k
-                landmarks.append([self.stoi[l_type] + 1 for l_type in self.landmarks[neighborhood][coord]])
-                k += 1
-            else:
-                if min_x <= coord[0] < min_x + 4 and min_y <= coord[1] < min_y + 4:
-                    # if all([t not in self.landmarks[neighborhood][(x, y)] for t in self.landmarks[neighborhood][coord]]):
-                    if True:
-                        landmarks.append([self.stoi[l_type] + 1 for l_type in self.landmarks[neighborhood][coord]])
-                        k += 1
-
-        assert label_index is not None
-        assert len(landmarks) == 16, "{}_{}_{}".format(x, y, neighborhood)
-
-        return landmarks, label_index
+    def get(self, neighborhood, x, y):
+        landmarks = self.coord_to_landmarks[neighborhood][x][y]
+        if self.include_empty_corners and len(landmarks) == 0:
+            return [self.landmark2i['Empty']]
+        return landmarks
 
     def get_landmarks_2d(self, neighborhood, boundaries, target_loc):
-        assert tuple(target_loc[:2]) in self.coord_to_idx[neighborhood], "x, y coordinates do not have landmarks"
         landmarks = [[[] for _ in range(4)] for _ in range(4)]
-        label_index = None
-        k = 0
-        for coord in self.idx_to_coord[neighborhood]:
-            normalized_coord = coord[0]-boundaries[0], coord[1]-boundaries[1]
-            if target_loc[0] == coord[0] and target_loc[1] == coord[1]:
-                label_index = normalized_coord
-                landmarks[normalized_coord[0]][normalized_coord[1]].extend([self.stoi[l_type] + 1 for l_type in self.landmarks[neighborhood][coord]])
-                k += 1
-            else:
-                if boundaries[0] <= coord[0] <= boundaries[2] and boundaries[1] <= coord[1] <= boundaries[3]:
-                    landmarks[normalized_coord[0]][normalized_coord[1]].extend([self.stoi[l_type] + 1 for l_type in self.landmarks[neighborhood][coord]])
-                    k += 1
+        label_index = (target_loc[0] - boundaries[0], target_loc[1] - boundaries[1])
+        for x in range(4):
+            for y in range(4):
+                landmarks[x][y] = self.get(neighborhood, boundaries[0] + x, boundaries[1] + y)
 
-        assert label_index is not None
+        assert 0<=label_index[0]<4
+        assert 0<=label_index[1]<4
 
         return landmarks, label_index
 
-    def get_softmax_idx(self, neighborhood, min_x, min_y, x, y):
-        assert (x, y) in self.coord_to_idx[neighborhood], "x, y coordinates do not have landmarks"
-        landmarks = list()
-        label_index = None
-        k = 0
-        for coord in self.idx_to_coord[neighborhood]:
-            if x == coord[0] and y == coord[1]:
-                label_index = k
-                landmarks.append([self.global_coord_to_idx[(neighborhood, coord[0], coord[1])]])
-                k += 1
-            else:
-                if min_x <= coord[0] < min_x + 4 and min_y <= coord[1] < min_y + 4:
-                    # if all([t not in self.landmarks[neighborhood][(x, y)] for t in self.landmarks[neighborhood][coord]]):
-                    if True:
-                        landmarks.append([self.global_coord_to_idx[(neighborhood, coord[0], coord[1])]])
-                        k += 1
-
-        assert label_index is not None
-        assert len(landmarks) == 16, "{}_{}_{}".format(x, y, neighborhood)
-
-        return landmarks, label_index
+    # def get_softmax_idx(self, neighborhood, min_x, min_y, x, y):
+    #     assert (x, y) in self.coord_to_idx[neighborhood], "x, y coordinates do not have landmarks"
+    #     landmarks = list()
+    #     label_index = None
+    #     k = 0
+    #     for coord in self.idx_to_coord[neighborhood]:
+    #         if x == coord[0] and y == coord[1]:
+    #             label_index = k
+    #             landmarks.append([self.global_coord_to_idx[(neighborhood, coord[0], coord[1])]])
+    #             k += 1
+    #         else:
+    #             if min_x <= coord[0] < min_x + 4 and min_y <= coord[1] < min_y + 4:
+    #                 # if all([t not in self.landmarks[neighborhood][(x, y)] for t in self.landmarks[neighborhood][coord]]):
+    #                 if True:
+    #                     landmarks.append([self.global_coord_to_idx[(neighborhood, coord[0], coord[1])]])
+    #                     k += 1
+    #
+    #     assert label_index is not None
+    #     assert len(landmarks) == 16, "{}_{}_{}".format(x, y, neighborhood)
+    #
+    #     return landmarks, label_index
 
 # get right orientation st you're facing landmarks
 def get_orientation_keys(x, y, cross_the_street=False):
@@ -204,12 +163,11 @@ class GoldstandardFeatures:
             mod = (loc[0]%2, loc[1]%2)
             orientation = self.mod2orientation[mod]
             if loc[2] in self.allowed_orientations[orientation]:
-                return [self.landmark_map.stoi[t] + 1 for t in
-                        self.landmark_map.landmarks[neighborhood][tuple(loc[:2])]]
+                return [x + 1 for x in self.landmark_map.get(neighborhood, loc[0], loc[1])]
             else:
-                return [11]
+                return [self.landmark_map.landmark2i['Empty']+1]
         else:
-            return [self.landmark_map.stoi[t] + 1 for t in self.landmark_map.landmarks[neighborhood][tuple(loc[:2])]]
+            return [x + 1 for x in self.landmark_map.get(neighborhood, loc[0], loc[1])]
 
 
 class TextrecogFeatures:
@@ -319,7 +277,7 @@ def step_aware(action, loc, boundaries):
         new_loc[1] = min(max(new_loc[1], boundaries[1]), boundaries[3])
     return new_loc
 
-def load_data(configurations, feature_loaders, landmark_map, softmax='location', num_steps=2, samples_per_configuration=None):
+def load_data(configurations, feature_loaders, landmark_map, softmax='landmarks', num_steps=2, samples_per_configuration=None):
     X_data, action_data, landmark_data, y_data = {k: list() for k in feature_loaders.keys()}, list(), list(), list()
 
     action_set = [[0, 1, 2, 3]]*(num_steps-1)

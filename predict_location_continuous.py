@@ -199,7 +199,6 @@ if __name__ == '__main__':
     parser.add_argument('--goldstandard-features', action='store_true')
     parser.add_argument('--masc', action='store_true')
     parser.add_argument('--T', type=int, default=2)
-    parser.add_argument('--softmax', choices=['landmarks', 'location'], default='landmarks')
     parser.add_argument('--emb-sz', type=int, default=512)
     parser.add_argument('--num-epochs', type=int, default=500)
     parser.add_argument('--batch_sz', type=int, default=64)
@@ -240,22 +239,18 @@ if __name__ == '__main__':
     assert (len(feature_loaders) > 0)
 
     X_train, actions_train, landmark_train, y_train = load_data(train_configs, feature_loaders, landmark_map,
-                                                                softmax=args.softmax, num_steps=args.T+1)
+                                                                num_steps=args.T+1)
     X_valid, actions_valid, landmark_valid, y_valid = load_data(valid_configs, feature_loaders, landmark_map,
-                                                                softmax=args.softmax, num_steps=args.T+1)
+                                                                num_steps=args.T+1)
     X_test, actions_test, landmark_test, y_test = load_data(test_configs, feature_loaders, landmark_map,
-                                                            softmax=args.softmax, num_steps=args.T+1)
+                                                            num_steps=args.T+1)
 
     print(len(X_train['goldstandard']), len(X_valid['goldstandard']), len(X_test['goldstandard']))
 
-    num_embeddings = len(landmark_map.idx_to_global_coord)
-    if args.softmax == 'landmarks':
-        num_embeddings = len(landmark_map.itos) + 1
+    num_embeddings = len(landmark_map.landmark2i) + 1
 
     net = LocationPredictor(args.goldstandard_features, args.resnet_features, args.fasttext_features, args.emb_sz, num_embeddings,
                             apply_masc=args.masc, T=args.T)
-
-    # net = LocationPredictor.load('/private/home/harm/exp/bla_2/model.pt')
     params = [v for k, v in net.named_parameters()]
 
     opt = optim.Adam(params, lr=1e-4)

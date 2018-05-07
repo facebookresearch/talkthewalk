@@ -102,12 +102,10 @@ class Guide(nn.Module):
             for i in range(T):
                 self.action_emb.append(nn.Linear(in_vocab_sz, 9))
 
-
         self.act_lin = nn.Linear(in_vocab_sz, 9)
 
 
     def forward(self, message, landmarks):
-
         msg_obs = self.obs_emb_fn(message[0])
         batch_size = message[0].size(0)
 
@@ -148,6 +146,8 @@ class Guide(nn.Module):
         state = torch.load(path)
         guide = cls(state['in_vocab_sz'], state['num_landmarks'], T=state['T'],
                     apply_masc=state['apply_masc'])
+        print(state['parameters'].keys())
+        print(state['T'])
         guide.load_state_dict(state['parameters'])
         return guide
 
@@ -245,7 +245,10 @@ class Tourist(nn.Module):
     def load(cls, path):
         state = torch.load(path)
         tourist = cls(state['goldstandard_features'], state['resnet_features'], state['fasttext_features'],
-                      state['vocab_sz'], T=state['T'], apply_masc=state['condition_on_action'])
+                      state['vocab_sz'], T=state['T'], apply_masc=state['apply_masc'])
+        for x in state.keys():
+            if x != 'parameters':
+                print(x, state[x])
         tourist.load_state_dict(state['parameters'])
 
         return tourist
@@ -266,7 +269,7 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    report_every = 5 # 10 epochs
+    report_every = 1 # 10 epochs
 
     exp_dir = os.path.join(os.environ['TALKTHEWALK_EXPDIR'], args.exp_name)
     if not os.path.exists(exp_dir):
@@ -299,7 +302,7 @@ if __name__ == '__main__':
         feature_loaders['resnet'] = ResnetFeatures(os.path.join(data_dir, 'resnetfeat.json'))
     if args.goldstandard_features:
         feature_loaders['goldstandard'] = GoldstandardFeatures(landmark_map)
-        in_vocab_sz = len(landmark_map.itos) + 1
+        in_vocab_sz = len(landmark_map.landmark2i) + 1
     assert (len(feature_loaders) > 0)
 
     X_train, actions_train, landmark_train, y_train = load_data(train_configs, feature_loaders,
@@ -314,15 +317,17 @@ if __name__ == '__main__':
                                                             softmax=args.softmax,
                                                             num_steps=args.T+1)
 
-    num_embeddings = len(landmark_map.types)+1
+    num_embeddings = len(landmark_map.landmark2i)+1
     if args.softmax == 'location':
-        num_embeddings = len(landmark_map.global_coord_to_idx)
-
+        num_embeddings = 12000
 
     guide = Guide(args.vocab_sz, num_embeddings,
                   apply_masc=args.masc, T=args.T)
     tourist = Tourist(args.goldstandard_features, args.resnet_features, args.fasttext_features, args.vocab_sz,
                       apply_masc=args.masc, T=args.T)
+
+    # guide = Guide.load('/u/devries/Documents/talkthewalk/results/disc_masc_3/guide.pt')
+    # tourist = Tourist.load('/u/devries/Documents/talkthewalk/results/disc_masc_3/tourist.pt')
 
     if args.cuda:
         guide = guide.cuda()
@@ -338,12 +343,14 @@ if __name__ == '__main__':
 
     for epoch in range(1, args.num_epochs):
         # train
-        tourist.train(); guide.train()
+        # tourist.train(); guide.train()
         X_train['goldstandard'], actions_train, landmark_train, y_train = shuffle(X_train['goldstandard'], actions_train, landmark_train, y_train)
 
         train_accuracy = eval_epoch(X_train, actions_train, landmark_train, y_train,
                                tourist, guide, args.batch_sz, args.cuda,
                                t_opt=t_opt, g_opt=g_opt)
+        # train_accuracy = eval_epoch(X_train, actions_train, landmark_train, y_train,
+        #                        tourist, guide, args.batch_sz, args.cuda)
 
         if epoch % report_every == 0:
             logger.info('Guide Accuracy: {:.4f}'.format(
