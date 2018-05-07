@@ -94,7 +94,7 @@ class Guide(nn.Module):
         self.obs_emb_fn = nn.Linear(in_vocab_sz, in_vocab_sz)
         self.landmark_write_gate = nn.ParameterList()
         for _ in range(T+1):
-            self.landmark_write_gate.append(nn.Parameter(torch.FloatTensor(1, in_vocab_sz, 1, 1).fill_(1.0)))
+            self.landmark_write_gate.append(nn.Parameter(torch.FloatTensor(1, in_vocab_sz, 1, 1).normal_(0.0, 0.1)))
 
         self.masc_fn = MASC(in_vocab_sz, apply_masc=apply_masc)
         if self.apply_masc:

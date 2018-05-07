@@ -43,7 +43,7 @@ class LocationPredictor(nn.Module):
 
         if self.apply_masc:
             self.action_emb = nn.Embedding(4, emb_sz)
-            self.action_mask = nn.Parameter(torch.FloatTensor(1, T, emb_sz).normal_(0.0, 0.1))
+            self.act_write_gate = nn.Parameter(torch.FloatTensor(1, T, emb_sz).normal_(0.0, 0.1))
             self.extract_fns = nn.ModuleList()
             for _ in range(self.T):
                 self.extract_fns.append(nn.Linear(emb_sz, 9))
@@ -81,7 +81,7 @@ class LocationPredictor(nn.Module):
 
         if self.apply_masc:
             action_emb = self.action_emb.forward(actions)
-            action_emb *= self.action_mask
+            action_emb *= F.sigmoid(self.act_write_gate)
             action_out = action_emb.sum(dim=1)
 
             for j in range(self.T):
