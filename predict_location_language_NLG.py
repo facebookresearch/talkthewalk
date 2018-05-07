@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import time
+from collections import deque
 
 from sklearn.utils import shuffle
 from torch.autograd import Variable
@@ -27,7 +28,7 @@ def get_action(msg):
     msg_to_act = {'ACTION:TURNLEFT': 0, 'ACTION:TURNRIGHT': 1, 'ACTION:FORWARD': 2}
     return msg_to_act.get(msg, None)
 
-def load_data(dataset, landmark_map, dictionary, full_dialogue=False, min_sent_length=2):
+def load_data(dataset, landmark_map, dictionary, full_dialogue=False, min_sent_length=2, num_past_utterances=5):
     Xs = list()
     landmarks = list()
     ys = list()
@@ -35,13 +36,13 @@ def load_data(dataset, landmark_map, dictionary, full_dialogue=False, min_sent_l
         loc = config['start_location']
         boundaries = config['boundaries']
 
-        dialogue = list()
+        dialogue = deque(maxlen=num_past_utterances)
         for msg in config['dialog']:
             if msg['id'] == 'Tourist':
                 act = get_action(msg['text'])
                 if act is not None:
                     loc = step_aware(act, loc, boundaries)
-                elif len(msg['text'].split(' ')) > 2:
+                elif len(msg['text'].split(' ')) > min_sent_length:
                     if full_dialogue:
                         dialogue.extend(dictionary.encode(msg['text']))
                         Xs.append(dialogue)
@@ -178,7 +179,7 @@ def eval_epoch(net, Xs, landmarks, ys, batch_sz, model_trainer, opt=None, use_cu
     for jj in range(0, len(Xs), batch_sz):
         X_batch, mask, landmark_batch, y_batch = create_batch(Xs[jj:jj + batch_sz], landmarks[jj:jj + batch_sz],
                                               ys[jj:jj + batch_sz], use_cuda=use_cuda)
-        X_gen_batch = model_trainer.predict(dataname, batch_sz, start=jj, print_preds=False, one_batch=True, max_len=X_batch.size(1), use_cuda=use_cuda)
+        X_gen_batch, mask = model_trainer.create_localization_batch(dataname, jj, X_batch.size(0))
         l, acc = net.forward(X_gen_batch, mask, landmark_batch, y_batch)
         accs += acc
         total += 1
@@ -193,9 +194,9 @@ def eval_epoch(net, Xs, landmarks, ys, batch_sz, model_trainer, opt=None, use_cu
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--full-dialogue', action='store_true')
     parser.register('type', 'bool', str2bool)
-
+    parser.add_argument('--full-dialogue', type='bool', default=False)
+    parser.add_argument('--num-past-utterances', type=int, default=5)
     parser.add_argument('--condition-on-action', type='bool', default=False)
     parser.add_argument('--mask-conv', type='bool', default=False)
     parser.add_argument('--num-steps-location', type=int, default=2)
@@ -210,7 +211,7 @@ if __name__ == '__main__':
     parser.add_argument('--valid-patience', type=int, default=5)
     parser.add_argument('-mf', '--model-file', type=str, default='my_model')
     parser.add_argument('--localize-model-file', type=str, default='my_model')
-    parser.add_argument('--resnet-features', type='bool', default=True)
+    parser.add_argument('--resnet-features', type='bool', default=False)
     parser.add_argument('--fasttext-features', type='bool', default=False)
     parser.add_argument('--goldstandard-features', type='bool', default=True)
     parser.add_argument('--enc-emb-sz', type=int, default=32)
@@ -226,30 +227,37 @@ if __name__ == '__main__':
     parser.add_argument('--use-dec-state',type='bool', default=True)
     parser.add_argument('--rnn-type', type=str, default='LSTM')
     parser.add_argument('--use-prev-word', type='bool', default=True)
-    # parser.add_argument('--n-enc-layers', type=int, default=2)
-    # parser.add_argument('--n-dec-layers', type=int, default=2)
     parser.add_argument('--n-layers', type=int, default=1)
     parser.add_argument('--learningrate', type=float, default=.001)
+    parser.add_argument('--min-word-freq', type=int, default=1)
+
     parser.add_argument('--dict-file', type=str, default='dict.txt')
     parser.add_argument('--temp-build', type='bool', default=False)
-    parser.add_argument('--fill-padding-mask', type='bool', default=False)
-    parser.add_argument('--min-sent-length', type=int, default=2)
+    parser.add_argument('--fill-padding-mask', type='bool', default=True)
+    parser.add_argument('--min-sent-length', type=int, default=0)
     parser.add_argument('--load-data', type='bool', default=True)
     parser.add_argument('--num-steps', type=int, default=-1)
-    parser.set_defaults(data_dir='data/',
-                        goldstandard_features=True,
-                        resnet_features=False,
-                        fill_padding_mask=True,
-                        # bidirectional=False,
-                        # pass_hidden_state=True,
-                        # use_dec_state=True,
-                        # use_prev_word=True,
-                        # cuda=False,
-                        )
+    parser.add_argument('--orientation-aware', type='bool', default=False,
+                        help='if false, tourist is not orientation aware, \
+                        act directions are not forward, turn left, etc; it\
+                        is simply up, down, left, right')
+    parser.add_argument('--sample-tokens', type='bool', default=False,
+                        help='whether to sample next generated token')
+    parser.add_argument('--split', type='bool', default=False,
+                        help='whether to use split tokenizer when\
+                        tokenizing messages (default is TweetTokenizer)')
+    parser.set_defaults(data_dir='data/')
 
     args = parser.parse_args()
     model_trainer = TrainLanguageGenerator(args)
     model_trainer.load_model(args.model_file)
+    args = model_trainer.args
+    # for dataset_name in ['train', 'valid', 'test']:
+    for dataset_name in ['train', 'valid', 'test']:
+        model_trainer.load_localization_data(dataset_name,
+                                             orientation_aware=False,
+                                             full_dialogue=args.full_dialogue,
+                                             num_past_utterances=args.num_past_utterances)
 
     exp_name = args.model_file + '_experiment' + str(time.time())
     exp_dir = os.path.join('experiment', exp_name)
@@ -272,14 +280,14 @@ if __name__ == '__main__':
     neighborhoods = ['fidi', 'hellskitchen', 'williamsburg', 'uppereast', 'eastvillage']
     landmark_map = Landmarks(neighborhoods, include_empty_corners=True)
 
-    train_Xs, train_landmarks, train_ys = load_data(train_set, landmark_map, dictionary, full_dialogue=args.full_dialogue, min_sent_length=args.min_sent_length)
-    valid_Xs, valid_landmarks, valid_ys = load_data(valid_set, landmark_map, dictionary, full_dialogue=args.full_dialogue, min_sent_length=args.min_sent_length)
-    test_Xs, test_landmarks, test_ys = load_data(test_set, landmark_map, dictionary, full_dialogue=args.full_dialogue, min_sent_length=args.min_sent_length)
-    print('len of model_trainer x: {}'.format(len(model_trainer.train_data[0])))
+    train_Xs, train_landmarks, train_ys = load_data(train_set, landmark_map, dictionary, full_dialogue=args.full_dialogue, min_sent_length=args.min_sent_length, num_past_utterances=args.num_past_utterances)
+    valid_Xs, valid_landmarks, valid_ys = load_data(valid_set, landmark_map, dictionary, full_dialogue=args.full_dialogue, min_sent_length=args.min_sent_length, num_past_utterances=args.num_past_utterances)
+    test_Xs, test_landmarks, test_ys = load_data(test_set, landmark_map, dictionary, full_dialogue=args.full_dialogue, min_sent_length=args.min_sent_length, num_past_utterances=args.num_past_utterances)
+    print('len of model_trainer x: {}'.format(len(model_trainer.train_localization_Xs)))
     print('len of train_xs x: {}'.format(len(train_Xs)))
-    print('len of model_trainer valid x: {}'.format(len(model_trainer.valid_data[0])))
+    print('len of model_trainer valid x: {}'.format(len(model_trainer.valid_localization_Xs)))
     print('len of valid_xs x: {}'.format(len(valid_Xs)))
-    print('len of model_trainer test x: {}'.format(len(model_trainer.test_data[0])))
+    print('len of model_trainer test x: {}'.format(len(model_trainer.test_localization_Xs)))
     print('len of test_xs x: {}'.format(len(test_Xs)))
     batch_sz = args.batch_sz
     hid_sz = 256
@@ -295,7 +303,7 @@ if __name__ == '__main__':
     opt = optim.Adam(net.parameters())
 
     best_train_acc, best_val_acc, best_test_acc = 0.0, 0.0, 0.0
-    for i in range(num_epochs):
+    for i in range(100):
         print('EPOCH NUMBER {}'.format(i))
         train_Xs, train_landmarks, train_ys = shuffle(train_Xs, train_landmarks, train_ys)
         train_loss, train_acc = eval_epoch(net, train_Xs, train_landmarks, train_ys, batch_sz, model_trainer, dataname='train', opt=opt, use_cuda=use_cuda)

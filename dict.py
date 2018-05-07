@@ -7,7 +7,7 @@ UNK_TOKEN = '__UNK__'
 START_TOKEN = '__START__'
 END_TOKEN = '__END__'
 PAD_TOKEN = '__PAD__'
-SPECIALS = [UNK_TOKEN, START_TOKEN, END_TOKEN, PAD_TOKEN]
+SPECIALS = [PAD_TOKEN, START_TOKEN, END_TOKEN, UNK_TOKEN]
 
 
 def split_tokenize(text):
@@ -28,7 +28,7 @@ class Dictionary:
         self.tok2cnt = dict()
         self.split = split
 
-        for tok in ['__UNK__', '__START__', '__END__', '__PAD__']:
+        for tok in SPECIALS:
             self.tok2i[tok] = len(self.tok2i)
             self.i2tok.append(tok)
             self.tok2cnt[tok] = 100000000
@@ -51,7 +51,7 @@ class Dictionary:
         return len(self.i2tok)
 
     def __getitem__(self, tok):
-        return self.tok2i.get(tok, self.tok2i['__UNK__'])
+        return self.tok2i.get(tok, self.tok2i[UNK_TOKEN])
 
     def encode(self, msg, include_end=False):
         if self.split:
