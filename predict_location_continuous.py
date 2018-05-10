@@ -99,7 +99,8 @@ class LocationPredictor(nn.Module):
         logits = torch.bmm(landmarks, emb.unsqueeze(-1)).squeeze(-1)
         prob = F.softmax(logits, dim=1)
 
-        y_true = (y[:, 0]*4 + y[:, 1]).squeeze()
+        y_true = (y[:, 0]*4 + y[:, 1]).squeeze(-1)
+
         loss = self.loss(prob, y_true)
         acc = sum([1.0 for pred, target in zip(prob.max(1)[1].data.cpu().numpy(), y_true.data.cpu().numpy()) if pred == target])/batch_size
         return loss, acc, prob

@@ -9,7 +9,7 @@ import torch.optim as optim
 from torch.autograd import Variable
 from sklearn.utils import shuffle
 from data_loader import Landmarks, step_aware, to_variable
-from modules import CBoW, MASC, ControlStep
+from modules import CBoW, MASC, NoMASC, ControlStep
 from utils import create_logger
 from dict import Dictionary
 
@@ -83,8 +83,9 @@ class LocationPredictor(nn.Module):
         self.cbow_fn = CBoW(11, hidden_sz)
 
         self.T_prediction_fn = nn.Linear(hidden_sz, T+1)
-        self.feat_control_step_fn = ControlStep(hidden_sz)
+
         self.feat_control_emb = nn.Parameter(torch.FloatTensor(hidden_sz).normal_(0.0, 0.1))
+        self.feat_control_step_fn = ControlStep(hidden_sz)
 
         if apply_masc:
             self.act_control_emb = nn.Parameter(torch.FloatTensor(hidden_sz).normal_(0.0, 0.1))
@@ -97,7 +98,10 @@ class LocationPredictor(nn.Module):
             self.landmark_write_gate.append(nn.Parameter(torch.FloatTensor(1, hidden_sz, 1, 1).normal_(0, 0.1)))
             self.obs_write_gate.append(nn.Parameter(torch.FloatTensor(1, hidden_sz).normal_(0.0, 0.1)))
 
-        self.masc_fn = MASC(self.hidden_sz, apply_masc=apply_masc)
+        if apply_masc:
+            self.masc_fn = MASC(self.hidden_sz)
+        else:
+            self.masc_fn = NoMASC(self.hidden_sz)
 
         self.loss = nn.CrossEntropyLoss()
 
@@ -136,7 +140,7 @@ class LocationPredictor(nn.Module):
                 landmark_embs.append(out)
         else:
             for step in range(self.T):
-                landmark_embs.append(self.masc_fn.forward_no_masc(landmark_embs[-1]))
+                landmark_embs.append(self.masc_fn.forward(landmark_embs[-1]))
 
         landmarks = sum([F.sigmoid(gate)*emb for gate, emb in zip(self.landmark_write_gate, landmark_embs)])
 

@@ -16,7 +16,7 @@ plt.switch_backend('agg')
 from data_loader import Landmarks, load_data, load_features, create_obs_dict, FasttextFeatures, GoldstandardFeatures, ResnetFeatures
 from utils import create_logger
 from predict_location_continuous import create_batch
-from modules import MASC, CBoW
+from modules import MASC, NoMASC, CBoW
 
 
 def eval_epoch(X, actions, landmarks, y, tourist, guide, batch_sz, cuda, t_opt=None, g_opt=None):
@@ -96,7 +96,10 @@ class Guide(nn.Module):
         for _ in range(T+1):
             self.landmark_write_gate.append(nn.Parameter(torch.FloatTensor(1, in_vocab_sz, 1, 1).normal_(0.0, 0.1)))
 
-        self.masc_fn = MASC(in_vocab_sz, apply_masc=apply_masc)
+        if apply_masc:
+            self.masc_fn = MASC(in_vocab_sz)
+        else:
+            self.masc_fn = NoMASC(in_vocab_sz)
         if self.apply_masc:
             self.action_emb = nn.ModuleList()
             for i in range(T):
@@ -121,7 +124,7 @@ class Guide(nn.Module):
                 landmark_embs.append(out)
         else:
             for j in range(self.T):
-                out = self.masc_fn.forward_no_masc(landmark_embs[-1])
+                out = self.masc_fn.forward(landmark_embs[-1])
                 landmark_embs.append(out)
 
         landmarks = sum([F.sigmoid(gate)*emb for gate, emb in zip(self.landmark_write_gate, landmark_embs)])
@@ -146,8 +149,6 @@ class Guide(nn.Module):
         state = torch.load(path)
         guide = cls(state['in_vocab_sz'], state['num_landmarks'], T=state['T'],
                     apply_masc=state['apply_masc'])
-        print(state['parameters'].keys())
-        print(state['T'])
         guide.load_state_dict(state['parameters'])
         return guide
 
@@ -246,9 +247,6 @@ class Tourist(nn.Module):
         state = torch.load(path)
         tourist = cls(state['goldstandard_features'], state['resnet_features'], state['fasttext_features'],
                       state['vocab_sz'], T=state['T'], apply_masc=state['apply_masc'])
-        for x in state.keys():
-            if x != 'parameters':
-                print(x, state[x])
         tourist.load_state_dict(state['parameters'])
 
         return tourist

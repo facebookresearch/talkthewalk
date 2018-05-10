@@ -32,7 +32,6 @@ class MASC(nn.Module):
             hidden_sz, hidden_sz, 3, 3))
         std = 1.0 / (hidden_sz * 9)
         self.conv_weight.data.uniform_(-std, std)
-        self.apply_masc = apply_masc
 
     def forward(self, inp, action_out, current_step=None, Ts=None):
         batch_size = inp.size(0)
@@ -46,9 +45,10 @@ class MASC(nn.Module):
                 out[i, :, :, :] = F.conv2d(selected_inp, weight, padding=1).squeeze(0)
         return out
 
-    def forward_no_masc(self, input):
-        assert not self.apply_masc, "`apply_masc` needs to be set to False before you can apply this fn"
 
+class NoMASC(MASC):
+
+    def forward(self, input):
         mask = torch.FloatTensor(1, 1, 3, 3).zero_()
         mask[0, 0, 0, 1] = 1.0
         mask[0, 0, 1, 0] = 1.0
@@ -61,6 +61,7 @@ class MASC(nn.Module):
 
         weight = self.conv_weight * mask
         return F.conv2d(input, weight, padding=1)
+
 
 
 class ControlStep(nn.Module):
