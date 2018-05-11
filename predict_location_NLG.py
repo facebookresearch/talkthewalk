@@ -170,7 +170,7 @@ class TrainLanguageGenerator(object):
                                      self.min_word_freq,
                                      split=args.split)
         self.action_obs_dict = ActionObservationDictionary(
-                                    self.landmark_map.itos,
+                                    self.landmark_map.i2landmark,
                                     [1, 2, 3],
                                     orientation_aware=self.orientation_aware)
         print('Loading Datasets...')

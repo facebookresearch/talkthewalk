@@ -7,10 +7,10 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 
-from data_loader import Landmarks, FasttextFeatures, ResnetFeatures, GoldstandardFeatures, \
+from talkthewalk.data_loader import Landmarks, FasttextFeatures, ResnetFeatures, GoldstandardFeatures, \
                         load_data, load_features, create_obs_dict, to_variable
-from utils import create_logger
-from modules import CBoW, MASC
+from talkthewalk.utils import create_logger
+from talkthewalk.modules import CBoW, MASC
 
 class LocationPredictor(nn.Module):
 

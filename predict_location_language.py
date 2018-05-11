@@ -8,10 +8,10 @@ import torch.optim as optim
 
 from torch.autograd import Variable
 from sklearn.utils import shuffle
-from data_loader import Landmarks, step_aware, to_variable
-from modules import CBoW, MASC, NoMASC, ControlStep
-from utils import create_logger
-from dict import Dictionary
+from talkthewalk.data_loader import Landmarks, step_aware, to_variable
+from talkthewalk.modules import CBoW, MASC, NoMASC, ControlStep
+from talkthewalk.utils import create_logger
+from talkthewalk.dict import Dictionary
 
 def get_action(msg):
     msg_to_act = {'ACTION:TURNLEFT': 0, 'ACTION:TURNRIGHT': 1, 'ACTION:FORWARD': 2}
@@ -68,10 +68,10 @@ def create_batch(Xs, landmarks, ys, cuda=False):
     return to_variable([X_batch, mask, landmark_batch, y_batch], cuda=cuda)
 
 
-class LocationPredictor(nn.Module):
+class Guide(nn.Module):
 
     def __init__(self, inp_emb_sz, hidden_sz, num_tokens, apply_masc=True, T=1):
-        super(LocationPredictor, self).__init__()
+        super(Guide, self).__init__()
         self.hidden_sz = hidden_sz
         self.inp_emb_sz = inp_emb_sz
         self.num_tokens = num_tokens
@@ -162,12 +162,31 @@ class LocationPredictor(nn.Module):
                    pred == target]) / batch_size
         return loss, acc
 
+    def save(self, path):
+        print('Save to: ' + path)
+        state = dict()
+        state['hidden_sz'] = self.hidden_sz
+        state['embed_sz'] = self.inp_emb_sz
+        state['num_tokens'] = self.num_tokens
+        state['apply_masc'] = self.apply_masc
+        state['T'] = self.T
+        state['parameters'] = self.state_dict()
+        torch.save(state, path)
+
+    @classmethod
+    def load(cls, path):
+        state = torch.load(path)
+        guide = cls(state['embed_sz'], state['hidden_sz'], state['num_tokens'],
+                    T=state['T'], apply_masc=state['apply_masc'])
+        guide.load_state_dict(state['parameters'])
+        return guide
+
 def eval_epoch(net, Xs, landmarks, ys, batch_sz, opt=None, cuda=False):
     loss, accs, total = 0.0, 0.0, 0.0
 
     for jj in range(0, len(Xs), batch_sz):
         X_batch, mask, landmark_batch, y_batch = create_batch(Xs[jj:jj + batch_sz], landmarks[jj:jj + batch_sz],
-                                              ys[jj:jj + batch_sz], cuda=cuda)
+                                                              ys[jj:jj + batch_sz], cuda=cuda)
         l, acc = net.forward(X_batch, mask, landmark_batch, y_batch)
         accs += acc
         total += 1
@@ -216,7 +235,7 @@ if __name__ == '__main__':
     valid_Xs, valid_landmarks, valid_ys = load_data(valid_set, landmark_map, dictionary, last_turns=args.last_turns)
     test_Xs, test_landmarks, test_ys = load_data(test_set, landmark_map, dictionary, last_turns=args.last_turns)
 
-    net = LocationPredictor(args.embed_sz, args.hidden_sz, len(dictionary), apply_masc=args.masc, T=args.T)
+    net = Guide(args.embed_sz, args.hidden_sz, len(dictionary), apply_masc=args.masc, T=args.T)
 
     if args.cuda:
         net = net.cuda()
@@ -235,6 +254,7 @@ if __name__ == '__main__':
         if valid_acc > best_val_acc:
             best_val_acc = valid_acc
             best_train_acc, best_val_acc, best_test_acc = train_acc, valid_acc, test_acc
+            net.save(os.path.join(exp_dir, 'guide.pt'))
 
     logger.info(best_train_acc)
     logger.info(best_val_acc)

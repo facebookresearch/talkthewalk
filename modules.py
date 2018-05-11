@@ -26,7 +26,7 @@ class CBoW(nn.Module):
 
 class MASC(nn.Module):
 
-    def __init__(self, hidden_sz, apply_masc=True):
+    def __init__(self, hidden_sz):
         super(MASC, self).__init__()
         self.conv_weight = nn.Parameter(torch.FloatTensor(
             hidden_sz, hidden_sz, 3, 3))

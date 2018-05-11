@@ -13,10 +13,9 @@ from sklearn.utils import shuffle
 from matplotlib import pyplot as plt
 plt.switch_backend('agg')
 
-from data_loader import Landmarks, load_data, load_features, create_obs_dict, FasttextFeatures, GoldstandardFeatures, ResnetFeatures
-from utils import create_logger
-from predict_location_continuous import create_batch
-from modules import MASC, NoMASC, CBoW
+from talkthewalk.data_loader import Landmarks, load_data, load_features, create_obs_dict, FasttextFeatures, GoldstandardFeatures, ResnetFeatures
+from talkthewalk.utils import create_logger
+from talkthewalk.modules import MASC, NoMASC, CBoW
 
 
 def eval_epoch(X, actions, landmarks, y, tourist, guide, batch_sz, cuda, t_opt=None, g_opt=None):
@@ -119,8 +118,7 @@ class Guide(nn.Module):
             for j in range(self.T):
                 act_msg = message[1]
                 action_out = self.action_emb[j](act_msg)
-
-                out = self.masc_fn.forward(landmark_embs[-1], action_out)
+                out = self.masc_fn.forward(landmark_embs[-1], action_out, current_step=j)
                 landmark_embs.append(out)
         else:
             for j in range(self.T):
@@ -133,7 +131,6 @@ class Guide(nn.Module):
         logits = torch.bmm(landmarks, msg_obs.unsqueeze(-1)).squeeze(-1)
         prob = F.softmax(logits, dim=1)
         return prob
-
 
     def save(self, path):
         state = dict()
