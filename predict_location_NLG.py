@@ -2,6 +2,7 @@ import argparse
 import os
 import ujson as json
 import torch
+import math
 import torch.optim as optim
 from collections import deque
 import time
@@ -94,6 +95,7 @@ class TrainLanguageGenerator(object):
         parser.add_argument('--num-steps', type=int, default=-1)
         parser.add_argument('--enc-emb-sz', type=int, default=32)
         parser.add_argument('--dec-emb-sz', type=int, default=32)
+        parser.add_argument('--ctx-dim', type=int, default=0)
         parser.add_argument('--resnet-dim', type=int, default=2048)
         parser.add_argument('--resnet-proj-dim', type=int, default=64)
         parser.add_argument('--hsz', type=int, default=128)
@@ -107,8 +109,6 @@ class TrainLanguageGenerator(object):
         parser.add_argument('--use-dec-state',type='bool', default=True)
         parser.add_argument('--rnn-type', type=str, default='LSTM')
         parser.add_argument('--use-prev-word', type='bool', default=True)
-        # parser.add_argument('--n-enc-layers', type=int, default=2)
-        # parser.add_argument('--n-dec-layers', type=int, default=2)
         parser.add_argument('--n-layers', type=int, default=1)
         parser.add_argument('--learningrate', type=float, default=.001)
         parser.add_argument('--dict-file', type=str, default='dict.txt')
@@ -126,6 +126,10 @@ class TrainLanguageGenerator(object):
         parser.add_argument('--split', type='bool', default=False,
                             help='whether to use split tokenizer when\
                             tokenizing messages (default is TweetTokenizer)')
+        parser.add_argument('--beam-search', type='bool', default=False,
+                            help='Whether to use beam search when generating tokens')
+        parser.add_argument('--beam-width', type=int, default=4,
+                            help='width of beam search')
         parser.set_defaults(data_dir='data/')
         self.args = parser.parse_args()
 
@@ -141,22 +145,10 @@ class TrainLanguageGenerator(object):
             args = self.override_args(args)
             self.args = args
         self.data_dir = args.data_dir
-        self.enc_emb_sz = args.enc_emb_sz
-        self.dec_emb_sz = args.dec_emb_sz
-        self.resnet_dim = args.resnet_dim
-        self.resnet_proj_dim = args.resnet_proj_dim
-        self.hsz = args.hsz
+
         self.num_epochs = args.num_epochs
         self.bsz = args.bsz
         self.contextlen = args.num_steps if args.num_steps >= 0 else None
-        self.bidirectional = args.bidirectional
-        self.attention = args.attention
-        self.pass_hidden_state = args.pass_hidden_state
-        self.rnn_type = args.rnn_type
-        self.use_prev_word = args.use_prev_word
-        self.use_dec_state = args.use_dec_state
-        self.n_layers = args.n_layers
-        self.dropout = args.dropout
         self.use_cuda = torch.cuda.is_available() and args.use_cuda
         self.valid_patience = args.valid_patience
         self.model_file = args.model_file
@@ -164,9 +156,10 @@ class TrainLanguageGenerator(object):
         self.learning_rate = args.learningrate
         self.min_sent_length = args.min_sent_length
         self.orientation_aware = args.orientation_aware
-        self.sample_tokens = args.sample_tokens
         self.min_word_freq = args.min_word_freq
         self.dict_file = args.dict_file
+        self.beam_search = args.beam_search
+        self.beam_width = args.beam_width
         self.logger = ProgressLogger(should_humanize=False, throttle=0.1)
 
         self.neighborhoods = ['fidi', 'hellskitchen', 'williamsburg',
@@ -216,33 +209,13 @@ class TrainLanguageGenerator(object):
 
     def setup_model(self):
         self.max_len = max([len(seq) for seq in self.train_data[0]])
-        self.model = Seq2Seq(n_lands=10,
+        self.model = Seq2Seq(self.args,
+                             n_lands=10,
                              n_acts=3 if self.orientation_aware else 4,
                              n_words_trg=len(self.dictionary),
-                             hidden_size=self.hsz,
-                             enc_emb_dim=self.enc_emb_sz,
-                             dec_emb_dim=self.dec_emb_sz,
-                             resnet_dim=self.resnet_dim,
-                             resnet_proj_dim=self.resnet_proj_dim,
-                             n_enc_layers=self.n_layers,
-                             n_dec_layers=self.n_layers,
-                             dropout=self.dropout,
-                             word_dropout=self.dropout,
-                             bidirectional=self.bidirectional,
-                             attn_type=self.attention,
-                             pass_hidden_state=self.pass_hidden_state,
                              vocab_src=self.action_obs_dict,
                              vocab_trg=self.dictionary,
-                             rnn_type=self.rnn_type,
-                             ctx_dim=0,
-                             use_prev_word=self.use_prev_word,
-                             use_dec_state=self.use_dec_state,
-                             max_length=self.max_len,
-                             cuda=self.use_cuda,
-                             use_resnet=self.args.resnet_features,
-                             fill_padding_mask=self.args.fill_padding_mask,
-                             orientation_aware=self.orientation_aware,
-                             sample_tokens=self.sample_tokens)
+                             max_length=self.max_len)
 
         # self.model = KVMemnn(args, self.dictionary)
         if self.use_cuda:
@@ -396,14 +369,16 @@ class TrainLanguageGenerator(object):
         else:
             dataset = self.test_set
         dataset_path = os.path.join(self.data_dir,
-                                    "{}_NLG_localize_data_mwf-{}_msl-{}_dict-{}_oa-{}_num_past_utt-{}_full_dialoge-{}/".format(
+                                    "{}_NLG_localize_data_mwf-{}_msl-{}_dict-{}_oa-{}_num_past_utt-{}_full_dialoge-{}_beam_search-{}_bs_width-{}/".format(
                                      dataset_name,
                                      self.min_word_freq,
                                      self.min_sent_length,
                                      self.dict_file,
                                      orientation_aware,
                                      num_past_utterances,
-                                     full_dialogue))
+                                     full_dialogue,
+                                     self.beam_search,
+                                     self.beam_width))
         if os.path.exists(dataset_path) and not temp_build:
             print('Localization data already built; loading {} split'.format(dataset_name))
             f_name = 'Xs.json'
@@ -751,11 +726,14 @@ class TrainLanguageGenerator(object):
                                      max_length=max_len,
                                      return_attention=True)
             preds = res['preds']
+            probs = res['log_probs']
             if print_preds:
                 for i in range(num_preds):
                     pred = preds[i, :]
+                    prob = math.exp(probs[i])
                     print('target: {}'.format(self.dictionary.decode(y_batch[i, :])))
                     print('generate: {}'.format(self.dictionary.decode(pred)))
+                    print('probability: {}'.format(prob))
                     print('\n')
                 break
             if one_batch:
@@ -810,9 +788,9 @@ class TrainLanguageGenerator(object):
 
 if __name__ == '__main__':
     trainer = TrainLanguageGenerator()
-    # trainer.load_model(trainer.model_file)
+    trainer.load_model(trainer.model_file)
 
-    trainer.train()
+    # trainer.train()
     print("TRAIN DATA")
     trainer.predict('train', 20)
     print("VALID DATA")

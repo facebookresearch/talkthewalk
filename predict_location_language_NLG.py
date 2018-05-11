@@ -246,7 +246,12 @@ if __name__ == '__main__':
     parser.add_argument('--split', type='bool', default=False,
                         help='whether to use split tokenizer when\
                         tokenizing messages (default is TweetTokenizer)')
+    parser.add_argument('--beam-width', type=int, default=4,
+                        help='width of beam search')
+    parser.add_argument('--beam-search', type='bool', default=False,
+                        help='Whether to use beam search when generating tokens')
     parser.set_defaults(data_dir='data/')
+
 
     args = parser.parse_args()
     model_trainer = TrainLanguageGenerator(args)
