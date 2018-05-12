@@ -84,11 +84,11 @@ class TrainLanguageGenerator(object):
     def setup_args(self):
         parser = argparse.ArgumentParser()
         parser.register('type', 'bool', str2bool)
-        parser.add_argument('--log-time', type=float, default=2.,
+        parser.add_argument('--log-time', type=float, default=300,
                             help='how often to log training')
         parser.add_argument('--use-cuda', type='bool', default=True)
         parser.add_argument('--valid-patience', type=int, default=5)
-        parser.add_argument('-mf', '--model-file', type=str, default='')
+        parser.add_argument('-mf', '--model-file', type=str, default='nlg.pt')
         parser.add_argument('--resnet-features', type='bool', default=False)
         parser.add_argument('--fasttext-features', type='bool', default=False)
         parser.add_argument('--goldstandard-features', type='bool', default=True)
@@ -790,7 +790,7 @@ if __name__ == '__main__':
     trainer = TrainLanguageGenerator()
     trainer.load_model(trainer.model_file)
 
-    # trainer.train()
+    trainer.train()
     print("TRAIN DATA")
     trainer.predict('train', 20)
     print("VALID DATA")

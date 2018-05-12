@@ -13,9 +13,9 @@ from sklearn.utils import shuffle
 from matplotlib import pyplot as plt
 plt.switch_backend('agg')
 
-from talkthewalk.data_loader import Landmarks, load_data, load_features, create_obs_dict, FasttextFeatures, GoldstandardFeatures, ResnetFeatures
+from talkthewalk.data_loader import Landmarks, load_data, load_features, create_obs_dict, FasttextFeatures, GoldstandardFeatures, ResnetFeatures, create_batch
 from talkthewalk.utils import create_logger
-from talkthewalk.modules import MASC, NoMASC, CBoW
+from talkthewalk.modules import MASC, NoMASC, CBoW, PredictConvWeight
 
 
 def eval_epoch(X, actions, landmarks, y, tourist, guide, batch_sz, cuda, t_opt=None, g_opt=None):
@@ -83,12 +83,13 @@ def eval_epoch(X, actions, landmarks, y, tourist, guide, batch_sz, cuda, t_opt=N
 
 class Guide(nn.Module):
 
-    def __init__(self, in_vocab_sz, num_landmarks, apply_masc=True, T=2):
+    def __init__(self, in_vocab_sz, num_landmarks, apply_masc=True, apply_full_conv=False, T=2):
         super(Guide, self).__init__()
         self.in_vocab_sz = in_vocab_sz
         self.num_landmarks = num_landmarks
         self.T = T
         self.apply_masc = apply_masc
+        self.apply_full_conv = apply_full_conv
         self.emb_map = CBoW(num_landmarks, in_vocab_sz, init_std=0.1)
         self.obs_emb_fn = nn.Linear(in_vocab_sz, in_vocab_sz)
         self.landmark_write_gate = nn.ParameterList()
@@ -97,14 +98,20 @@ class Guide(nn.Module):
 
         if apply_masc:
             self.masc_fn = MASC(in_vocab_sz)
+        elif self.apply_full_conv:
+            self.masc_fn = PredictConvWeight(in_vocab_sz)
         else:
             self.masc_fn = NoMASC(in_vocab_sz)
+
         if self.apply_masc:
             self.action_emb = nn.ModuleList()
             for i in range(T):
                 self.action_emb.append(nn.Linear(in_vocab_sz, 9))
 
-        self.act_lin = nn.Linear(in_vocab_sz, 9)
+        if self.apply_full_conv:
+            self.action_emb = nn.ModuleList()
+            for i in range(T):
+                self.action_emb.append(nn.Linear(in_vocab_sz, 9*in_vocab_sz*in_vocab_sz))
 
 
     def forward(self, message, landmarks):
@@ -114,7 +121,7 @@ class Guide(nn.Module):
         landmark_emb = self.emb_map.forward(landmarks).permute(0, 3, 1, 2)
         landmark_embs = [landmark_emb]
 
-        if self.apply_masc:
+        if self.apply_masc or self.apply_full_conv:
             for j in range(self.T):
                 act_msg = message[1]
                 action_out = self.action_emb[j](act_msg)
@@ -139,13 +146,15 @@ class Guide(nn.Module):
         state['parameters'] = self.state_dict()
         state['T'] = self.T
         state['apply_masc'] = self.apply_masc
+        state['apply_full_conv'] = self.apply_full_conv
         torch.save(state, path)
 
     @classmethod
     def load(cls, path):
         state = torch.load(path)
+        apply_full_conv = state.get('apply_full_conv', False)
         guide = cls(state['in_vocab_sz'], state['num_landmarks'], T=state['T'],
-                    apply_masc=state['apply_masc'])
+                    apply_masc=state['apply_masc'], apply_full_conv=apply_full_conv)
         guide.load_state_dict(state['parameters'])
         return guide
 
@@ -256,6 +265,7 @@ if __name__ == '__main__':
     parser.add_argument('--goldstandard-features', action='store_true')
     parser.add_argument('--softmax', choices=['landmarks', 'location'], default='landmarks')
     parser.add_argument('--masc', action='store_true')
+    parser.add_argument('--apply-full-conv', action='store_true')
     parser.add_argument('--T', type=int, default=2)
     parser.add_argument('--vocab-sz', type=int, default=500)
     parser.add_argument('--batch-sz', type=int, default=128)
@@ -317,9 +327,9 @@ if __name__ == '__main__':
         num_embeddings = 12000
 
     guide = Guide(args.vocab_sz, num_embeddings,
-                  apply_masc=args.masc, T=args.T)
+                  apply_masc=args.masc, T=args.T, apply_full_conv=args.apply_full_conv)
     tourist = Tourist(args.goldstandard_features, args.resnet_features, args.fasttext_features, args.vocab_sz,
-                      apply_masc=args.masc, T=args.T)
+                      apply_masc=(args.masc or args.apply_full_conv), T=args.T)
 
     # guide = Guide.load('/u/devries/Documents/talkthewalk/results/disc_masc_3/guide.pt')
     # tourist = Tourist.load('/u/devries/Documents/talkthewalk/results/disc_masc_3/tourist.pt')

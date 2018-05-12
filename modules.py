@@ -42,6 +42,7 @@ class MASC(nn.Module):
                 selected_inp = inp[i, :, :, :].unsqueeze(0)
                 mask = F.softmax(action_out[i], dim=0).view(1, 1, 3, 3)
                 weight = mask * self.conv_weight
+                print(weight.norm())
                 out[i, :, :, :] = F.conv2d(selected_inp, weight, padding=1).squeeze(0)
         return out
 
@@ -62,7 +63,22 @@ class NoMASC(MASC):
         weight = self.conv_weight * mask
         return F.conv2d(input, weight, padding=1)
 
+class PredictConvWeight(nn.Module):
 
+    def __init__(self, hidden_sz):
+        super(PredictConvWeight, self).__init__()
+        self.hidden_sz = hidden_sz
+
+    def forward(self, inp, action_out, current_step=None, Ts=None):
+        batch_size = inp.size(0)
+        out = inp.clone().zero_()
+
+        for i in range(batch_size):
+            if Ts is None or current_step < Ts[i]:
+                selected_inp = inp[i, :, :, :].unsqueeze(0)
+                weight = action_out[i, :].view(self.hidden_sz, self.hidden_sz, 3, 3)/100.0
+                out[i, :, :, :] = F.conv2d(selected_inp, weight, padding=1).squeeze(0)
+        return out
 
 class ControlStep(nn.Module):
 

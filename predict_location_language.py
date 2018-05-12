@@ -9,7 +9,7 @@ import torch.optim as optim
 from torch.autograd import Variable
 from sklearn.utils import shuffle
 from talkthewalk.data_loader import Landmarks, step_aware, to_variable
-from talkthewalk.modules import CBoW, MASC, NoMASC, ControlStep
+from talkthewalk.modules import CBoW, MASC, NoMASC, ControlStep, PredictConvWeight
 from talkthewalk.utils import create_logger
 from talkthewalk.dict import Dictionary
 
@@ -70,12 +70,13 @@ def create_batch(Xs, landmarks, ys, cuda=False):
 
 class Guide(nn.Module):
 
-    def __init__(self, inp_emb_sz, hidden_sz, num_tokens, apply_masc=True, T=1):
+    def __init__(self, inp_emb_sz, hidden_sz, num_tokens, apply_masc=True, apply_full_conv=False, T=1):
         super(Guide, self).__init__()
         self.hidden_sz = hidden_sz
         self.inp_emb_sz = inp_emb_sz
         self.num_tokens = num_tokens
         self.apply_masc = apply_masc
+        self.apply_full_conv = apply_full_conv
         self.T = T
 
         self.embed_fn = nn.Embedding(num_tokens, inp_emb_sz, padding_idx=0)
@@ -87,10 +88,14 @@ class Guide(nn.Module):
         self.feat_control_emb = nn.Parameter(torch.FloatTensor(hidden_sz).normal_(0.0, 0.1))
         self.feat_control_step_fn = ControlStep(hidden_sz)
 
-        if apply_masc:
+        if apply_masc or apply_full_conv:
             self.act_control_emb = nn.Parameter(torch.FloatTensor(hidden_sz).normal_(0.0, 0.1))
             self.act_control_step_fn = ControlStep(hidden_sz)
+
+        if apply_masc:
             self.action_linear_fn = nn.Linear(hidden_sz, 9)
+        elif apply_full_conv:
+            self.action_linear_fn = nn.Linear(hidden_sz, 9*hidden_sz*hidden_sz)
 
         self.landmark_write_gate = nn.ParameterList()
         self.obs_write_gate = nn.ParameterList()
@@ -100,6 +105,8 @@ class Guide(nn.Module):
 
         if apply_masc:
             self.masc_fn = MASC(self.hidden_sz)
+        elif apply_full_conv:
+            self.masc_fn = PredictConvWeight(self.hidden_sz)
         else:
             self.masc_fn = NoMASC(self.hidden_sz)
 
@@ -131,7 +138,7 @@ class Guide(nn.Module):
         landmark_emb = self.cbow_fn(landmarks).permute(0, 3, 1, 2)
         landmark_embs = [landmark_emb]
 
-        if self.apply_masc:
+        if self.apply_masc or self.apply_full_conv:
             act_controller = self.act_control_emb.unsqueeze(0).repeat(batch_size, 1)
             for step in range(self.T):
                 extracted_msg, act_controller = self.act_control_step_fn(hidden_states, seq_mask, act_controller)
@@ -169,6 +176,7 @@ class Guide(nn.Module):
         state['embed_sz'] = self.inp_emb_sz
         state['num_tokens'] = self.num_tokens
         state['apply_masc'] = self.apply_masc
+        state['apply_full_conv'] = self.apply_full_conv
         state['T'] = self.T
         state['parameters'] = self.state_dict()
         torch.save(state, path)
@@ -176,8 +184,10 @@ class Guide(nn.Module):
     @classmethod
     def load(cls, path):
         state = torch.load(path)
+        apply_full_conv = state.get('apply_full_conv', False)
         guide = cls(state['embed_sz'], state['hidden_sz'], state['num_tokens'],
-                    T=state['T'], apply_masc=state['apply_masc'])
+                    T=state['T'], apply_masc=state['apply_masc'],
+                    apply_full_conv=apply_full_conv)
         guide.load_state_dict(state['parameters'])
         return guide
 
@@ -204,6 +214,7 @@ if __name__ == '__main__':
     parser.add_argument('--cuda', action='store_true')
     parser.add_argument('--last-turns', type=int, default=1)
     parser.add_argument('--masc', action='store_true')
+    parser.add_argument('--apply-full-conv', action='store_true')
     parser.add_argument('--T', type=int, default=2)
     parser.add_argument('--hidden-sz', type=int, default=256)
     parser.add_argument('--embed-sz', type=int, default=128)
@@ -235,7 +246,7 @@ if __name__ == '__main__':
     valid_Xs, valid_landmarks, valid_ys = load_data(valid_set, landmark_map, dictionary, last_turns=args.last_turns)
     test_Xs, test_landmarks, test_ys = load_data(test_set, landmark_map, dictionary, last_turns=args.last_turns)
 
-    net = Guide(args.embed_sz, args.hidden_sz, len(dictionary), apply_masc=args.masc, T=args.T)
+    net = Guide(args.embed_sz, args.hidden_sz, len(dictionary), apply_masc=args.masc, apply_full_conv=args.apply_full_conv, T=args.T)
 
     if args.cuda:
         net = net.cuda()
