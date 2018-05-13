@@ -237,7 +237,7 @@ if __name__ == '__main__':
     valid_set = json.load(open(os.path.join(data_dir, 'talkthewalk.valid.json')))
     test_set = json.load(open(os.path.join(data_dir, 'talkthewalk.test.json')))
 
-    dictionary = Dictionary('./data/dict.txt', 3)
+    dictionary = Dictionary(os.path.join(data_dir, '/dict.txt'), 3)
 
     neighborhoods = ['fidi', 'hellskitchen', 'williamsburg', 'uppereast', 'eastvillage']
     landmark_map = Landmarks(neighborhoods, include_empty_corners=True)
