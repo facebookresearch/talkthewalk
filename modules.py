@@ -42,7 +42,6 @@ class MASC(nn.Module):
                 selected_inp = inp[i, :, :, :].unsqueeze(0)
                 mask = F.softmax(action_out[i], dim=0).view(1, 1, 3, 3)
                 weight = mask * self.conv_weight
-                print(weight.norm())
                 out[i, :, :, :] = F.conv2d(selected_inp, weight, padding=1).squeeze(0)
         return out
 

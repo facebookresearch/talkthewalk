@@ -115,9 +115,12 @@ class Guide(nn.Module):
     def forward(self, Xs, seq_mask, landmarks, ys):
         batch_size = Xs.size(0)
         input_emb = self.embed_fn(Xs)
+        print(input_emb.size())
         hidden_states, _ = self.encoder_fn(input_emb)
 
         last_state_indices = seq_mask.sum(1).long() - 1
+        print(last_state_indices.size())
+
         last_hidden_states = hidden_states[torch.arange(batch_size).long(), last_state_indices, :]
         T_dist = F.softmax(self.T_prediction_fn(last_hidden_states))
         sampled_Ts = T_dist.multinomial(1).squeeze()
@@ -237,7 +240,7 @@ if __name__ == '__main__':
     valid_set = json.load(open(os.path.join(data_dir, 'talkthewalk.valid.json')))
     test_set = json.load(open(os.path.join(data_dir, 'talkthewalk.test.json')))
 
-    dictionary = Dictionary(os.path.join(data_dir, '/dict.txt'), 3)
+    dictionary = Dictionary(os.path.join(data_dir, 'dict.txt'), 3)
 
     neighborhoods = ['fidi', 'hellskitchen', 'williamsburg', 'uppereast', 'eastvillage']
     landmark_map = Landmarks(neighborhoods, include_empty_corners=True)

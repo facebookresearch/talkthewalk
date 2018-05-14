@@ -15,7 +15,7 @@ from data_loader import Landmarks, step_aware, to_variable
 from utils import create_logger
 from dict import Dictionary
 from predict_location_multiple_step import MapEmbedding2d
-from predict_location_NLG import TrainLanguageGenerator
+from train_NLG import TrainLanguageGenerator
 def str2bool(value):
     v = value.lower()
     if v in ('yes', 'true', 't', '1', 'y'):
@@ -110,6 +110,7 @@ class LocationPredictor(nn.Module):
     def forward(self, Xs, seq_mask, landmarks, ys):
         batch_size = Xs.size(0)
         input_emb = self.embedder.forward(Xs)
+        print(input_emb.size())
         hidden_states, _ = self.encoder.forward(input_emb)
 
         feature_msgs = list()

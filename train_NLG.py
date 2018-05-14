@@ -93,12 +93,12 @@ class TrainLanguageGenerator(object):
         parser.add_argument('--fasttext-features', type='bool', default=False)
         parser.add_argument('--goldstandard-features', type='bool', default=True)
         parser.add_argument('--num-steps', type=int, default=-1)
-        parser.add_argument('--enc-emb-sz', type=int, default=32)
-        parser.add_argument('--dec-emb-sz', type=int, default=32)
+        parser.add_argument('--enc-emb-sz', type=int, default=256)
+        parser.add_argument('--dec-emb-sz', type=int, default=256)
         parser.add_argument('--ctx-dim', type=int, default=0)
         parser.add_argument('--resnet-dim', type=int, default=2048)
         parser.add_argument('--resnet-proj-dim', type=int, default=64)
-        parser.add_argument('--hsz', type=int, default=128)
+        parser.add_argument('--hsz', type=int, default=1024)
         parser.add_argument('--num-epochs', type=int, default=500)
         parser.add_argument('--bsz', type=int, default=64)
         parser.add_argument('--exp-name', type=str, default='test')
@@ -110,12 +110,12 @@ class TrainLanguageGenerator(object):
         parser.add_argument('--rnn-type', type=str, default='LSTM')
         parser.add_argument('--use-prev-word', type='bool', default=True)
         parser.add_argument('--n-layers', type=int, default=1)
-        parser.add_argument('--learningrate', type=float, default=.001)
+        parser.add_argument('--learningrate', type=float, default=1.e-4)
         parser.add_argument('--dict-file', type=str, default='dict.txt')
-        parser.add_argument('--min-word-freq', type=int, default=1)
+        parser.add_argument('--min-word-freq', type=int, default=3)
         parser.add_argument('--temp-build', type='bool', default=False)
         parser.add_argument('--fill-padding-mask', type='bool', default=True)
-        parser.add_argument('--min-sent-length', type=int, default=0)
+        parser.add_argument('--min-sent-length', type=int, default=3)
         parser.add_argument('--load-data', type='bool', default=True)
         parser.add_argument('--orientation-aware', type='bool', default=False,
                             help='if false, tourist is not orientation aware, \
@@ -169,6 +169,8 @@ class TrainLanguageGenerator(object):
         self.dictionary = Dictionary(self.data_dir+self.dict_file,
                                      self.min_word_freq,
                                      split=args.split)
+        print(args.min_word_freq)
+        print(len(self.dictionary))
         self.action_obs_dict = ActionObservationDictionary(
                                     self.landmark_map.i2landmark,
                                     [1, 2, 3],
@@ -203,7 +205,7 @@ class TrainLanguageGenerator(object):
                 if key == 'cuda':
                     args['use_cuda'] = val
                     args['cuda'] = val
-                else:
+                elif key not in ['temp_build']:
                     args[key] = val
         return args
 
@@ -331,11 +333,11 @@ class TrainLanguageGenerator(object):
                                     if act_dir != -1:
                                         act_obs_memory.append(act_dir)
                                 if orientation_aware or act_dir != -1:
-                                    ls, _ = self.landmark_map.get_landmarks_2d(
-                                                    neighborhood,
-                                                    boundaries,
-                                                    loc)
-                                    landmarks.append(ls)
+                                    # ls, _ = self.landmark_map.get_landmarks_2d(
+                                    #                 neighborhood,
+                                    #                 boundaries,
+                                    #                 loc)
+                                    # landmarks.append(ls)
                                     obs_emb = {}
                                     for k, loader in feature_loaders.items():
                                         if k == 'goldstandard':
@@ -349,6 +351,7 @@ class TrainLanguageGenerator(object):
                                     act_obs_memory.append(obs_emb)
 
             data = [Xs, tourist_locs, landmarks, ys]
+            print(len(Xs), len(landmarks))
             if not temp_build:
                 print("Finished building {}, saving now".format(dataset_name))
                 os.makedirs(dataset_path)
