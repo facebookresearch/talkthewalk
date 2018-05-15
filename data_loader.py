@@ -9,6 +9,8 @@ from torch.autograd import Variable
 #
 from sklearn.decomposition import PCA
 data_dir = os.environ.get('TALKTHEWALK_DATADIR', './data')
+neighborhoods = ['hellskitchen', 'williamsburg', 'eastvillage', 'fidi', 'uppereast']
+
 
 class Landmarks(object):
 

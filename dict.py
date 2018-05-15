@@ -85,7 +85,8 @@ class Dictionary:
 
         with open(file, 'w') as f:
             for tok in sorted_list:
-                f.write(tok[0] + '\t' + str(tok[1]) + '\n')
+                if tok[0] not in SPECIALS:
+                    f.write(tok[0] + '\t' + str(tok[1]) + '\n')
 
 
 if __name__ == '__main__':
@@ -106,4 +107,4 @@ if __name__ == '__main__':
                         if len(msg['text'].split(' ')) > 2:
                             dictionary.add(msg['text'])
 
-    dictionary.save('./data/tourist_lower_dict_gt2.txt')
+    dictionary.save('./data/dict.txt')

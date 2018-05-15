@@ -115,11 +115,9 @@ class Guide(nn.Module):
     def forward(self, Xs, seq_mask, landmarks, ys):
         batch_size = Xs.size(0)
         input_emb = self.embed_fn(Xs)
-        print(input_emb.size())
         hidden_states, _ = self.encoder_fn(input_emb)
 
         last_state_indices = seq_mask.sum(1).long() - 1
-        print(last_state_indices.size())
 
         last_hidden_states = hidden_states[torch.arange(batch_size).long(), last_state_indices, :]
         T_dist = F.softmax(self.T_prediction_fn(last_hidden_states))
