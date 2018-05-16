@@ -33,6 +33,10 @@ def get_action(msg):
                   'ACTION:FORWARD': 3}
     return msg_to_act.get(msg, None)
 
+def get_action_from_i(i):
+    idx_to_act = ['LEFT', 'UP', 'RIGHT', 'DOWN']
+    return idx_to_act[i-1]
+
 
 # Determine if tourist went "up", "down", "left", "right"
 def get_new_action(old_loc, new_loc):
@@ -84,21 +88,21 @@ class TrainLanguageGenerator(object):
     def setup_args(self):
         parser = argparse.ArgumentParser()
         parser.register('type', 'bool', str2bool)
-        parser.add_argument('--log-time', type=float, default=300,
+        parser.add_argument('--log-time', type=float, default=2.,
                             help='how often to log training')
         parser.add_argument('--use-cuda', type='bool', default=True)
         parser.add_argument('--valid-patience', type=int, default=5)
-        parser.add_argument('-mf', '--model-file', type=str, default='nlg.pt')
+        parser.add_argument('-mf', '--model-file', type=str, default='')
         parser.add_argument('--resnet-features', type='bool', default=False)
-        parser.add_argument('--fasttext-features', type='bool', default=False)
-        parser.add_argument('--goldstandard-features', type='bool', default=True)
+        parser.add_argument('--goldstandard-features', type='bool',
+                            default=True)
         parser.add_argument('--num-steps', type=int, default=-1)
-        parser.add_argument('--enc-emb-sz', type=int, default=256)
-        parser.add_argument('--dec-emb-sz', type=int, default=256)
+        parser.add_argument('--enc-emb-sz', type=int, default=32)
+        parser.add_argument('--dec-emb-sz', type=int, default=32)
         parser.add_argument('--ctx-dim', type=int, default=0)
         parser.add_argument('--resnet-dim', type=int, default=2048)
         parser.add_argument('--resnet-proj-dim', type=int, default=64)
-        parser.add_argument('--hsz', type=int, default=1024)
+        parser.add_argument('--hsz', type=int, default=128)
         parser.add_argument('--num-epochs', type=int, default=500)
         parser.add_argument('--bsz', type=int, default=64)
         parser.add_argument('--exp-name', type=str, default='test')
@@ -115,8 +119,7 @@ class TrainLanguageGenerator(object):
         parser.add_argument('--min-word-freq', type=int, default=3)
         parser.add_argument('--temp-build', type='bool', default=False)
         parser.add_argument('--fill-padding-mask', type='bool', default=True)
-        parser.add_argument('--min-sent-length', type=int, default=3)
-        parser.add_argument('--load-data', type='bool', default=True)
+        parser.add_argument('--min-sent-length', type=int, default=0)
         parser.add_argument('--orientation-aware', type='bool', default=False,
                             help='if false, tourist is not orientation aware, \
                             act directions are not forward, turn left, etc; it\
@@ -127,9 +130,12 @@ class TrainLanguageGenerator(object):
                             help='whether to use split tokenizer when\
                             tokenizing messages (default is TweetTokenizer)')
         parser.add_argument('--beam-search', type='bool', default=False,
-                            help='Whether to use beam search when generating tokens')
+                            help='Whether to use beam search when \
+                            generating tokens')
         parser.add_argument('--beam-width', type=int, default=4,
                             help='width of beam search')
+        parser.add_argument('--use-actions', type='bool', default=True,
+                            help='Whether to condition on actions')
         parser.set_defaults(data_dir='data/')
         self.args = parser.parse_args()
 
@@ -140,10 +146,13 @@ class TrainLanguageGenerator(object):
         else:
             self.args = args
         args_file = args.model_file.replace('.best_valid', '') + '.args'
+        old_args = args
         if os.path.exists(args_file):
             print('Overriding args from {}'.format(args_file))
             args = self.override_args(args)
             self.args = args
+        self.beam_width = old_args.beam_width
+        self.beam_search = old_args.beam_search
         self.data_dir = args.data_dir
 
         self.num_epochs = args.num_epochs
@@ -158,19 +167,16 @@ class TrainLanguageGenerator(object):
         self.orientation_aware = args.orientation_aware
         self.min_word_freq = args.min_word_freq
         self.dict_file = args.dict_file
-        self.beam_search = args.beam_search
-        self.beam_width = args.beam_width
+        self.condition_on_action = args.use_actions
         self.logger = ProgressLogger(should_humanize=False, throttle=0.1)
 
         self.neighborhoods = ['fidi', 'hellskitchen', 'williamsburg',
                               'uppereast', 'eastvillage']
         self.landmark_map = Landmarks(self.neighborhoods,
-                                      include_empty_corners=True)
+                                      include_empty_corners=False)
         self.dictionary = Dictionary(self.data_dir+self.dict_file,
                                      self.min_word_freq,
                                      split=args.split)
-        print(args.min_word_freq)
-        print(len(self.dictionary))
         self.action_obs_dict = ActionObservationDictionary(
                                     self.landmark_map.i2landmark,
                                     [1, 2, 3],
@@ -183,17 +189,16 @@ class TrainLanguageGenerator(object):
                                          'train',
                                          temp_build=args.temp_build,
                                          orientation_aware=self.orientation_aware)
-        if args.load_data:
-            print('Building Valid Data...')
-            self.valid_data = self.load_data(self.valid_set,
-                                             'valid',
-                                             temp_build=args.temp_build,
-                                             orientation_aware=self.orientation_aware)
-            print('Building Test Data...')
-            self.test_data = self.load_data(self.test_set,
-                                            'test',
-                                            temp_build=args.temp_build,
-                                            orientation_aware=self.orientation_aware)
+        print('Building Valid Data...')
+        self.valid_data = self.load_data(self.valid_set,
+                                         'valid',
+                                         temp_build=args.temp_build,
+                                         orientation_aware=self.orientation_aware)
+        print('Building Test Data...')
+        self.test_data = self.load_data(self.test_set,
+                                        'test',
+                                        temp_build=args.temp_build,
+                                        orientation_aware=self.orientation_aware)
         self.setup_model()
 
     def override_args(self, args):
@@ -205,7 +210,7 @@ class TrainLanguageGenerator(object):
                 if key == 'cuda':
                     args['use_cuda'] = val
                     args['cuda'] = val
-                elif key not in ['temp_build']:
+                else:
                     args[key] = val
         return args
 
@@ -245,24 +250,18 @@ class TrainLanguageGenerator(object):
 
     def setup_feature_loaders(self):
         self.feature_loaders = {}
-        if self.args.fasttext_features:
-            textfeatures = load_features(self.neighborhoods)
-            self.feature_loaders['fasttext'] = FasttextFeatures(
-                                        textfeatures,
-                                        '/private/home/harm/data/wiki.en.bin')
         if self.args.resnet_features:
             self.feature_loaders['resnet'] = ResnetFeatures(
                                             os.path.join(self.data_dir,
                                                          'resnetfeat.json'))
         if self.args.goldstandard_features:
             self.feature_loaders['goldstandard'] = GoldstandardFeatures(
-                                                            self.landmark_map)
+                                                            self.landmark_map,
+                                                            orientation_aware=self.orientation_aware)
 
     def load_data(self, dataset, dataset_name, temp_build=False,
                   orientation_aware=True):
         Xs = []         # x_i = [a_1, o_1, a_2, ..., a_n, o_n] acts + obs
-        tourist_locs = []
-        landmarks = []
         ys = []         # y_i = msg from tourist
         feature_loaders = self.feature_loaders
         dataset_path = os.path.join(self.data_dir,
@@ -275,7 +274,7 @@ class TrainLanguageGenerator(object):
                                      self.contextlen))
         if os.path.exists(dataset_path) and not temp_build:
             data = []
-            for d in ['Xs', 'tourist_locs', 'landmarks', 'ys']:
+            for d in ['Xs', 'ys']:
                 print("Loading {} for {}".format(d, dataset_name))
                 f_name = '{}.json'.format(d)
                 with open(os.path.join(dataset_path, f_name)) as f:
@@ -297,9 +296,6 @@ class TrainLanguageGenerator(object):
                             if msg_length > self.min_sent_length:
                                 y = self.dictionary.encode(msg['text'],
                                                            include_end=True)
-                                ls, tl = self.landmark_map.get_landmarks_2d(
-                                                neighborhood, boundaries, loc)
-                                landmarks.append(ls)
                                 if len(act_obs_memory) == 0:
                                     obs_emb = {}
                                     for k, loader in feature_loaders.items():
@@ -312,32 +308,26 @@ class TrainLanguageGenerator(object):
                                                                   loc[1])
                                         obs_emb[k] = features
                                     act_obs_memory.append(obs_emb)
-                                if orientation_aware:
+                                if orientation_aware and self.condition_on_action:
                                     act_obs_memory.append(
                                         self.action_obs_dict.tok2i[END_TOKEN])
                                 Xs.append(list(act_obs_memory))
                                 ys.append(y)
-                                tourist_locs.append(tl)
                                 act_obs_memory.clear()
-                            else:
-                                act_obs_memory.clear()
+                            # else:
+                            #     act_obs_memory.clear()
                         else:
                             new_loc = step_aware(act-1, loc, boundaries)
                             old_loc = loc
                             loc = new_loc
-                            if orientation_aware:
+                            if orientation_aware and self.condition_on_action:
                                 act_obs_memory.append(act)
                             if act == 3:  # went forward
                                 if not orientation_aware:
                                     act_dir = get_new_action(old_loc, new_loc)
-                                    if act_dir != -1:
+                                    if act_dir != -1 and self.condition_on_action:
                                         act_obs_memory.append(act_dir)
                                 if orientation_aware or act_dir != -1:
-                                    # ls, _ = self.landmark_map.get_landmarks_2d(
-                                    #                 neighborhood,
-                                    #                 boundaries,
-                                    #                 loc)
-                                    # landmarks.append(ls)
                                     obs_emb = {}
                                     for k, loader in feature_loaders.items():
                                         if k == 'goldstandard':
@@ -350,12 +340,11 @@ class TrainLanguageGenerator(object):
                                         obs_emb[k] = features
                                     act_obs_memory.append(obs_emb)
 
-            data = [Xs, tourist_locs, landmarks, ys]
-            print(len(Xs), len(landmarks))
+            data = [Xs, ys]
             if not temp_build:
                 print("Finished building {}, saving now".format(dataset_name))
                 os.makedirs(dataset_path)
-                for i, d in enumerate(['Xs', 'tourist_locs', 'landmarks', 'ys']):
+                for i, d in enumerate(['Xs', 'ys']):
                     print("Saving {}".format(d))
                     with open(os.path.join(dataset_path, '{}.json'.format(d)), 'w') as f:
                         json.dump(data[i], f)
@@ -381,7 +370,8 @@ class TrainLanguageGenerator(object):
                                      num_past_utterances,
                                      full_dialogue,
                                      self.beam_search,
-                                     self.beam_width))
+                                     self.beam_width
+                                     ))
         if os.path.exists(dataset_path) and not temp_build:
             print('Localization data already built; loading {} split'.format(dataset_name))
             f_name = 'Xs.json'
@@ -412,8 +402,6 @@ class TrainLanguageGenerator(object):
                         if msg_length > self.min_sent_length:
                             y = self.dictionary.encode(msg['text'],
                                                        include_end=True)
-                            ls, tl = self.landmark_map.get_landmarks_2d(
-                                            neighborhood, boundaries, loc)
                             obs_emb = {}
                             for k, loader in self.feature_loaders.items():
                                 if k == 'goldstandard':
@@ -429,8 +417,8 @@ class TrainLanguageGenerator(object):
                                 act_obs_memory.append(
                                     self.action_obs_dict.tok2i[END_TOKEN])
                             X = list(act_obs_memory)
-                            data = self.create_batch([X], [tl], [y])
-                            X_batch, _, _, _, X_lengths, _, max_len = data
+                            data = self.create_batch([X], [y])
+                            X_batch, _, _, X_lengths, _, max_len = data
                             # X_batch, _, X_lengths, _, max_len = data
                             res = self.model.forward(src_var=X_batch,
                                                      src_lengths=X_lengths,
@@ -457,8 +445,6 @@ class TrainLanguageGenerator(object):
                                 if act_dir != -1:
                                     act_obs_memory.append(act_dir)
                             if orientation_aware or act_dir != -1:
-                                ls, _ = self.landmark_map.get_landmarks_2d(
-                                                neighborhood, boundaries, loc)
                                 obs_emb = {}
                                 for k, loader in self.feature_loaders.items():
                                     if k == 'goldstandard':
@@ -469,7 +455,7 @@ class TrainLanguageGenerator(object):
                                 act_obs_memory.append(obs_emb)
                 elif full_dialogue:
                     dialogue.append(self.dictionary.encode(msg['text'],
-                                               include_end=False))
+                                              include_end=False))
         if save_data:
             f_name = 'Xs.json'
             os.makedirs(dataset_path)
@@ -484,7 +470,7 @@ class TrainLanguageGenerator(object):
 
         return Xs
 
-    def create_batch(self, Xs, tourist_locs, ys):
+    def create_batch(self, Xs, ys):
         batch_size = len(Xs)
         seq_lens = [len(seq) for seq in Xs]
         y_lens = [len(y) for y in ys]
@@ -500,7 +486,6 @@ class TrainLanguageGenerator(object):
                                                     self.dictionary[PAD_TOKEN])
         for i, seq in enumerate(ys):
             y_batch[i, :len(seq)] = torch.LongTensor(seq)
-        tourist_loc_batch = torch.LongTensor(tourist_locs)
 
         # Sort batch according to length of sequence
         sorted_seq_lens, sorted_indices = torch.sort(
@@ -510,7 +495,6 @@ class TrainLanguageGenerator(object):
         sorted_y_batch = torch.LongTensor(batch_size, max_y_len).fill_(
             self.dictionary[PAD_TOKEN]
         )
-        sorted_tourist_loc_batch = torch.LongTensor(tourist_loc_batch.size())
         sorted_mask = torch.FloatTensor(batch_size, max_X_len).zero_()
         sorted_y_lens = []
         i = 0
@@ -518,19 +502,16 @@ class TrainLanguageGenerator(object):
             sorted_X_batch[i][:] = X_batch[idx][:]
             sorted_y_batch[i, :] = y_batch[idx][:]
             sorted_y_lens.append(y_lens[i])
-            sorted_tourist_loc_batch[i] = tourist_loc_batch[idx]
             sorted_mask[i, :sorted_seq_lens[i]] = 1.0
             i += 1
 
         if self.use_cuda:
             sorted_mask = sorted_mask.cuda()
-            sorted_tourist_loc_batch = sorted_tourist_loc_batch.cuda()
             sorted_y_batch = sorted_y_batch.cuda()
         return (sorted_X_batch,
                 sorted_mask,
-                sorted_tourist_loc_batch,
                 sorted_y_batch,
-                sorted(seq_lens, reverse=True),
+                sorted_seq_lens,
                 sorted_y_lens,
                 max_y_len)
 
@@ -562,7 +543,7 @@ class TrainLanguageGenerator(object):
         print("Beginning Training...")
         if num_epochs is None:
             num_epochs = self.num_epochs
-        Xs, tourist_locs, landmarks, ys = self.train_data
+        Xs, ys = self.train_data
         best_valid = float('inf')
         best_test = float('inf')
         best_train_loss_at_best_valid = float('inf')
@@ -571,15 +552,14 @@ class TrainLanguageGenerator(object):
         to_log = time.time()
         start = time.time()
         for epoch_num in range(self.num_epochs):
-            Xs, tourist_locs, ys = shuffle(Xs, tourist_locs, ys)
+            Xs, ys = shuffle(Xs, ys)
             total_loss, total_loss_since_log, total, total_since_log = 0.0, 0.0, 0.0, 0.0
             batch_num = 0
             for jj in range(0, len(Xs), self.bsz):
                 batch_num += 1
                 data = self.create_batch(Xs[jj:jj + self.bsz],
-                                         tourist_locs[jj:jj + self.bsz],
                                          ys[jj:jj + self.bsz])
-                X_batch, mask, t_locs_batch, y_batch, X_lengths, y_lengths, max_len = data
+                X_batch, mask, y_batch, X_lengths, y_lengths, max_len = data
 
                 res = self.model.forward(src_var=X_batch,
                                          src_lengths=X_lengths,
@@ -659,16 +639,15 @@ class TrainLanguageGenerator(object):
 
 
     def eval_epoch(self):
-        Xs, tourist_locs, landmarks, ys = self.valid_data
-        Xs, tourist_locs, ys = shuffle(Xs, tourist_locs, ys)
+        Xs, ys = self.valid_data
+        Xs, ys = shuffle(Xs, ys)
         total_loss, total = 0.0, 0.0
         batch_num = 0
         for jj in range(0, len(Xs), self.bsz):
             batch_num += 1
             data = self.create_batch(Xs[jj:jj + self.bsz],
-                                     tourist_locs[jj:jj + self.bsz],
                                      ys[jj:jj + self.bsz])
-            X_batch, mask, t_locs_batch, y_batch, X_lengths, y_lengths, max_len = data
+            X_batch, mask, y_batch, X_lengths, y_lengths, max_len = data
             res = self.model.forward(src_var=X_batch,
                                      src_lengths=X_lengths,
                                      trg_var=y_batch,
@@ -681,16 +660,15 @@ class TrainLanguageGenerator(object):
         return total_loss/total
 
     def eval_test(self):
-        Xs, tourist_locs, landmarks, ys = self.test_data
-        Xs, tourist_locs, ys = shuffle(Xs, tourist_locs, ys)
+        Xs, ys = self.test_data
+        Xs, ys = shuffle(Xs, ys)
         total_loss, total = 0.0, 0.0
         batch_num = 0
         for jj in range(0, len(Xs), self.bsz):
             batch_num += 1
             data = self.create_batch(Xs[jj:jj + self.bsz],
-                                     tourist_locs[jj:jj + self.bsz],
                                      ys[jj:jj + self.bsz])
-            X_batch, mask, t_locs_batch, y_batch, X_lengths, y_lengths, max_len = data
+            X_batch, mask, y_batch, X_lengths, y_lengths, max_len = data
             res = self.model.forward(src_var=X_batch,
                                      src_lengths=X_lengths,
                                      trg_var=y_batch,
@@ -710,16 +688,15 @@ class TrainLanguageGenerator(object):
         else:
             data = self.valid_data
 
-        Xs, tourist_locs, landmarks, ys = data
+        Xs, ys = data
 
         if start is None:
             start = random.choice(range(len(Xs)-num_preds))
 
         for jj in range(start, len(Xs), num_preds):
             data = self.create_batch(Xs[jj:jj + num_preds],
-                                     tourist_locs[jj:jj + num_preds],
                                      ys[jj:jj + num_preds])
-            X_batch, mask, t_locs_batch, y_batch, X_lengths, y_lengths, max_d_len = data
+            X_batch, mask, y_batch, X_lengths, y_lengths, max_d_len = data
             if max_len is None:
                 max_len = max_d_len
             res = self.model.forward(src_var=X_batch,
@@ -733,10 +710,20 @@ class TrainLanguageGenerator(object):
             if print_preds:
                 for i in range(num_preds):
                     pred = preds[i, :]
-                    prob = math.exp(probs[i])
+                    # prob = math.exp(probs[i])
+                    obs = X_batch[i]
+                    print_obs = []
+                    for a_or_o in obs:
+                        if type(a_or_o) is int:
+                            if a_or_o == 0:
+                                break
+                            print_obs.append(get_action_from_i(a_or_o))
+                        else:
+                            print_obs.append([self.landmark_map.i2landmark[k-1] for kk in a_or_o.values() for k in kk])
+                    print('observation: {}'.format(print_obs))
                     print('target: {}'.format(self.dictionary.decode(y_batch[i, :])))
                     print('generate: {}'.format(self.dictionary.decode(pred)))
-                    print('probability: {}'.format(prob))
+                    # print('probability: {}'.format(prob))
                     print('\n')
                 break
             if one_batch:
@@ -754,11 +741,10 @@ class TrainLanguageGenerator(object):
         else:
             data = self.valid_data
 
-        Xs, tourist_locs, landmarks, ys = data
+        Xs, ys = data
         data = self.create_batch(Xs[idx:idx + 1],
-                                 tourist_locs[idx:idx + 1],
                                  ys[idx:idx + 1])
-        X_batch, mask, t_locs_batch, y_batch, X_lengths, y_lengths, max_len = data
+        X_batch, mask, y_batch, X_lengths, y_lengths, max_len = data
         res = self.model.forward(src_var=X_batch,
                                  src_lengths=X_lengths,
                                  trg_var=None,
@@ -793,7 +779,7 @@ if __name__ == '__main__':
     trainer = TrainLanguageGenerator()
     trainer.load_model(trainer.model_file)
 
-    trainer.train()
+    # trainer.train()
     print("TRAIN DATA")
     trainer.predict('train', 20)
     print("VALID DATA")
