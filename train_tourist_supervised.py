@@ -93,7 +93,7 @@ def load_data(data, dictionary, feature_loader, landmark_map,
                         if act == 3:  # went forward
                             act_dir = get_new_action(old_loc, new_loc)
                             act_memory.append(act_dir)
-                            obs_memory.append(loader.get(neighborhood, loc))
+                            obs_memory.append(feature_loader.get(neighborhood, loc))
 
     return observations, actions, msgs, landmarks, target_indices
 
@@ -131,7 +131,7 @@ def create_batch(observations, actions, messages, cuda=True):
 class Tourist(nn.Module):
 
     def __init__(self, act_emb_sz, act_hid_sz, num_actions, obs_emb_sz, obs_hid_sz, num_observations,
-                 decoder_emb_sz, decoder_hid_sz, num_words, start_token=0):
+                 decoder_emb_sz, decoder_hid_sz, num_words, start_token=1, end_token=2):
         super(Tourist, self).__init__()
         self.act_emb_sz = act_emb_sz
         self.act_hid_sz = act_hid_sz
@@ -162,13 +162,13 @@ class Tourist(nn.Module):
 
         self.loss = nn.CrossEntropyLoss(reduce=False)
         self.start_token = start_token
-        print(start_token)
+        self.end_token = end_token
 
     def pick_hidden_state(self, states, seq_lens):
         batch_size = seq_lens.size(0)
         return states[torch.arange(batch_size).long(), seq_lens - 1, :]
 
-    def forward(self, observations, obs_seq_len, actions, act_seq_len, gt_messages=None, gt_mask=None, sample=True, max_sample_length=15):
+    def forward(self, observations, obs_seq_len, actions, act_seq_len, gt_messages=None, gt_mask=None, sample=True, max_sample_length=20):
         batch_size = observations.size(0)
 
         obs_inp_emb = self.obs_emb_fn(observations)
@@ -226,6 +226,12 @@ class Tourist(nn.Module):
             if observations.is_cuda:
                 hs = hs.cuda()
 
+            mask = Variable(torch.FloatTensor(batch_size, max_sample_length).zero_())
+            eos = torch.ByteTensor([0]*batch_size)
+            if observations.is_cuda:
+                eos = eos.cuda()
+                mask = mask.cuda()
+
             for k in range(max_sample_length):
                 inp_emb = self.emb_fn.forward(input_ind.unsqueeze(-1))
 
@@ -236,13 +242,19 @@ class Tourist(nn.Module):
 
                 prob = F.softmax(self.out_linear(hs.squeeze(0)), dim=-1)
                 samples = prob.multinomial(1)
+                mask[:, k] = 1.0 - eos.float()
+
+                eos = eos | (samples == self.end_token).squeeze()
+
 
                 preds.append(samples)
-                probs.append(prob)
+                probs.append(prob.unsqueeze(1))
                 input_ind = samples.squeeze()
 
             out = {}
             out['preds'] = torch.cat(preds, 1)
+            out['mask'] = mask
+            out['probs'] = torch.cat(probs, 1)
 
         return out
 
@@ -274,7 +286,7 @@ class Tourist(nn.Module):
         return tourist
 
 
-def show_samples(data, tourist, dictionary, num_samples=10, cuda=True, logger=None):
+def show_samples(data, tourist, dictionary, landmark_map, num_samples=10, cuda=True, logger=None):
     length = len(data[0])
     observations = []
     actions = []
@@ -303,8 +315,8 @@ def show_samples(data, tourist, dictionary, num_samples=10, cuda=True, logger=No
             o += '(' + ','.join([landmark_map.i2landmark[o_ind-1] for o_ind in obs]) + ') ,'
 
         logger_fn('Observations: ' + o)
-        logger_fn('GT: ' + dict.decode(messages[i][1:]))
-        logger_fn('Sample: ' + dict.decode(preds[i, :]))
+        logger_fn('GT: ' + dictionary.decode(messages[i][1:]))
+        logger_fn('Sample: ' + dictionary.decode(preds[i, :]))
         logger_fn('-'*80)
 
 def eval_epoch(data, tourist, batch_sz=32, cuda=True, opt=None):
@@ -364,17 +376,18 @@ if __name__ == '__main__':
     valid_configs = json.load(open(os.path.join(data_dir, 'talkthewalk.valid.json')))
     test_configs = json.load(open(os.path.join(data_dir, 'talkthewalk.test.json')))
 
-    dict = Dictionary(file=os.path.join(data_dir, 'dict.txt'), min_freq=3)
+    text_dict = Dictionary(file=os.path.join(data_dir, 'dict.txt'), min_freq=3)
     landmark_map = Landmarks(neighborhoods, include_empty_corners=True)
     loader = GoldstandardFeatures(landmark_map)
 
-    train_data = load_data(train_configs, dict, loader, landmark_map)
-    valid_data = load_data(valid_configs, dict, loader, landmark_map)
-    test_data = load_data(test_configs, dict, loader, landmark_map)
+    train_data = load_data(train_configs, text_dict, loader, landmark_map)
+    valid_data = load_data(valid_configs, text_dict, loader, landmark_map)
+    test_data = load_data(test_configs, text_dict, loader, landmark_map)
 
 
-    tourist = Tourist(args.act_emb_sz, args.act_hid_sz, 6, args.obs_emb_sz, args.obs_hid_sz, len(landmark_map.i2landmark)+1,
-                      args.decoder_emb_sz, args.decoder_hid_sz, len(dict), start_token=dict.tok2i[START_TOKEN])
+    tourist = Tourist(args.act_emb_sz, args.act_hid_sz, 6, args.obs_emb_sz, args.obs_hid_sz, len(landmark_map.i2landmark) + 1,
+                      args.decoder_emb_sz, args.decoder_hid_sz, len(text_dict),
+                      start_token=text_dict.tok2i[START_TOKEN], end_token=text_dict.tok2i[END_TOKEN])
 
     opt = optim.Adam(tourist.parameters())
 
@@ -388,7 +401,7 @@ if __name__ == '__main__':
         valid_loss = eval_epoch(valid_data, tourist, batch_sz=args.batch_sz, cuda=args.cuda)
 
         logger.info('Train loss: {}, Valid_loss: {}'.format(train_loss, valid_loss))
-        show_samples(test_data, tourist, dict, cuda=args.cuda, num_samples=5, logger=logger.info)
+        show_samples(test_data, tourist, text_dict, cuda=args.cuda, num_samples=5, logger=logger.info)
 
         if valid_loss < best_val:
             best_val = valid_loss

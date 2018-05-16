@@ -163,8 +163,8 @@ class Guide(nn.Module):
         reward = -(sl_loss - sl_loss.mean())
 
         log_prob = torch.log(torch.gather(T_dist, 1, sampled_Ts.unsqueeze(-1)) + 1e-8)
-        rl_loss = (log_prob*reward).sum()
-        loss = sl_loss.sum() - rl_loss
+        rl_loss = (log_prob*reward)
+        loss = sl_loss - rl_loss
 
         acc = sum([1.0 for pred, target in zip(prob.max(1)[1].data.cpu().numpy(), y_true.data.cpu().numpy()) if
                    pred == target]) / batch_size

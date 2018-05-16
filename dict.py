@@ -96,7 +96,7 @@ if __name__ == '__main__':
     valid_set = json.load(open(os.path.join(data_dir, 'talkthewalk.valid.json')))
     test_set = json.load(open(os.path.join(data_dir, 'talkthewalk.test.json')))
 
-    # dictionary = Dictionary('./data/dict.txt', 3)
+    # dictionary = Dictionary('./data/text_dict.txt', 3)
 
     dictionary = Dictionary()
     for set in [train_set, valid_set, test_set]:
@@ -107,4 +107,4 @@ if __name__ == '__main__':
                         if len(msg['text'].split(' ')) > 2:
                             dictionary.add(msg['text'])
 
-    dictionary.save('./data/dict.txt')
+    dictionary.save('./data/text_dict.txt')
