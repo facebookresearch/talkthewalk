@@ -15,7 +15,7 @@ from data_loader import Landmarks, step_aware, to_variable
 from modules import CBoW, MASC, NoMASC, ControlStep
 from utils import create_logger
 from dict import Dictionary
-from predict_location_NLG import TrainLanguageGenerator
+from train_NLG import TrainLanguageGenerator
 def str2bool(value):
     v = value.lower()
     if v in ('yes', 'true', 't', '1', 'y'):

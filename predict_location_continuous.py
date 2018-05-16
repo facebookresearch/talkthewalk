@@ -7,15 +7,15 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 
-from data_loader import Landmarks, FasttextFeatures, ResnetFeatures, GoldstandardFeatures, \
-                        load_data, load_features, create_obs_dict, to_variable
-from utils import create_logger
-from modules import CBoW, MASC
+from talkthewalk.data_loader import Landmarks, FasttextFeatures, ResnetFeatures, GoldstandardFeatures, \
+                        load_data, load_features, create_obs_dict, to_variable, create_batch
+from talkthewalk.utils import create_logger
+from talkthewalk.modules import CBoW, MASC, NoMASC, PredictConvWeight
 
 class LocationPredictor(nn.Module):
 
     def __init__(self, goldstandard_features, resnet_features, fasttext_features,
-                 emb_sz, num_embeddings, T=2, apply_masc=True):
+                 emb_sz, num_embeddings, T=2, apply_masc=True, apply_full_conv=False):
         super(LocationPredictor, self).__init__()
         self.goldstandard_features = goldstandard_features
         self.resnet_features = resnet_features
@@ -23,7 +23,9 @@ class LocationPredictor(nn.Module):
         self.num_embeddings = num_embeddings
         self.emb_sz = emb_sz
         self.apply_masc = apply_masc
+        self.apply_full_conv = apply_full_conv
         self.T = T
+
         if self.goldstandard_features:
             self.goldstandard_emb = nn.Embedding(11, emb_sz)
         if self.fasttext_features:
@@ -32,7 +34,6 @@ class LocationPredictor(nn.Module):
             self.resnet_emb_linear = nn.Linear(2048, emb_sz)
         self.cbow_fn = CBoW(num_embeddings, emb_sz, init_std=0.01)
 
-        self.masc_fn = MASC(emb_sz, apply_masc=apply_masc)
         self.loss = nn.CrossEntropyLoss()
 
         self.obs_write_gate = nn.ParameterList()
@@ -42,11 +43,21 @@ class LocationPredictor(nn.Module):
             self.landmark_write_gate.append(nn.Parameter(torch.FloatTensor(1, emb_sz, 1, 1).normal_(0.0, 0.1)))
 
         if self.apply_masc:
+            self.masc_fn = MASC(emb_sz)
             self.action_emb = nn.Embedding(4, emb_sz)
             self.act_write_gate = nn.Parameter(torch.FloatTensor(1, T, emb_sz).normal_(0.0, 0.1))
             self.extract_fns = nn.ModuleList()
             for _ in range(self.T):
                 self.extract_fns.append(nn.Linear(emb_sz, 9))
+        elif self.apply_full_conv:
+            self.masc_fn = PredictConvWeight(emb_sz)
+            self.action_emb = nn.Embedding(4, emb_sz)
+            self.act_write_gate = nn.Parameter(torch.FloatTensor(1, T, emb_sz).normal_(0.0, 0.1))
+            self.extract_fns = nn.ModuleList()
+            for _ in range(self.T):
+                self.extract_fns.append(nn.Linear(emb_sz, emb_sz*emb_sz*9))
+        else:
+            self.masc_fn = NoMASC(emb_sz)
 
     def forward(self, X, actions, landmarks, y):
         batch_size = y.size(0)
@@ -79,7 +90,7 @@ class LocationPredictor(nn.Module):
         l_emb = self.cbow_fn.forward(landmarks).permute(0, 3, 1, 2)
         l_embs = [l_emb]
 
-        if self.apply_masc:
+        if self.apply_masc or self.apply_full_conv:
             action_emb = self.action_emb.forward(actions)
             action_emb *= F.sigmoid(self.act_write_gate)
             action_out = action_emb.sum(dim=1)
@@ -90,7 +101,7 @@ class LocationPredictor(nn.Module):
                 l_embs.append(out)
         else:
             for j in range(self.T):
-                out = self.masc_fn.forward_no_masc(l_emb)
+                out = self.masc_fn.forward(l_emb)
                 l_embs.append(out)
 
         landmarks = sum([F.sigmoid(gate)*emb for gate, emb in zip(self.landmark_write_gate, l_embs)])
@@ -114,53 +125,19 @@ class LocationPredictor(nn.Module):
         state['num_embeddings'] = self.num_embeddings
         state['T'] = self.T
         state['apply_masc'] = self.apply_masc
+        state['apply_full_conv'] = self.apply_full_conv
         state['parameters'] = self.state_dict()
         torch.save(state, path)
 
     @classmethod
     def load(cls, path):
         state = torch.load(path)
+        apply_full_conv = state.get('apply_full_conv', False)
         model = cls(state['goldstandard_features'], state['resnet_features'], state['fasttext_features'],
                     state['emb_sz'], state['num_embeddings'], T=state['T'],
-                    apply_masc=state['apply_masc'])
+                    apply_masc=state['apply_masc'], apply_full_conv=apply_full_conv)
         model.load_state_dict(state['parameters'])
         return model
-
-def create_batch(X, actions, landmarks, y, cuda=False):
-    bsz = len(y)
-    batch = dict()
-    if 'resnet' in X:
-        batch['resnet'] = torch.FloatTensor(X['resnet'])
-    if 'fasttext' in X:
-        max_len = max(len(s) for s in X['fasttext'])
-        batch['fasttext'] = torch.FloatTensor(bsz, max_len, 100).zero_()
-        for ii in range(bsz):
-            for jj in range(len(X['fasttext'][ii])):
-                batch['fasttext'][ii, jj, :] = torch.from_numpy(X['fasttext'][ii][jj])
-    if 'textrecog' in X:
-        max_len = max(len(s) for s in X['textrecog'])
-        batch['textrecog'] = torch.LongTensor(bsz, max_len).zero_()
-        for ii in range(bsz):
-            for jj in range(len(X['textrecog'][ii])):
-                batch['textrecog'][ii, jj] = X['textrecog'][ii][jj]
-    if 'goldstandard' in X:
-        max_steps = max(len(s) for s in X['goldstandard'])
-        max_len = max([max([len(x) for x in l]) for l in X['goldstandard']])
-        batch['goldstandard'] = torch.LongTensor(bsz, max_steps, max_len).zero_()
-        for ii in range(bsz):
-            for jj in range(len(X['goldstandard'][ii])):
-                for kk in range(len(X['goldstandard'][ii][jj])):
-                    batch['goldstandard'][ii, jj, kk] = X['goldstandard'][ii][jj][kk]
-
-    max_landmarks_per_coord = max([max([max([len(y) for y in x]) for x in l]) for l in landmarks])
-    landmark_batch = torch.LongTensor(bsz, 4, 4, max_landmarks_per_coord).zero_()
-
-    for i, ls in enumerate(landmarks):
-        for j in range(4):
-            for k in range(4):
-                landmark_batch[i, j, k, :len(landmarks[i][j][k])] = torch.LongTensor(landmarks[i][j][k])
-
-    return to_variable((batch, torch.LongTensor(actions), landmark_batch, torch.LongTensor(y).unsqueeze(-1)), cuda=cuda)
 
 
 def epoch(net, X, actions, landmarks, y, batch_sz, opt=None, shuffle=True, cuda=False):
@@ -199,6 +176,7 @@ if __name__ == '__main__':
     parser.add_argument('--fasttext-features', action='store_true')
     parser.add_argument('--goldstandard-features', action='store_true')
     parser.add_argument('--masc', action='store_true')
+    parser.add_argument('--apply-full-conv', action='store_true')
     parser.add_argument('--T', type=int, default=2)
     parser.add_argument('--emb-sz', type=int, default=512)
     parser.add_argument('--num-epochs', type=int, default=500)
@@ -251,7 +229,7 @@ if __name__ == '__main__':
     num_embeddings = len(landmark_map.landmark2i) + 1
 
     net = LocationPredictor(args.goldstandard_features, args.resnet_features, args.fasttext_features, args.emb_sz, num_embeddings,
-                            apply_masc=args.masc, T=args.T)
+                            apply_masc=args.masc, T=args.T, apply_full_conv=args.apply_full_conv)
     params = [v for k, v in net.named_parameters()]
 
     opt = optim.Adam(params, lr=1e-4)

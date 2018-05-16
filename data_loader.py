@@ -9,6 +9,8 @@ from torch.autograd import Variable
 #
 from sklearn.decomposition import PCA
 data_dir = os.environ.get('TALKTHEWALK_DATADIR', './data')
+neighborhoods = ['hellskitchen', 'williamsburg', 'eastvillage', 'fidi', 'uppereast']
+
 
 class Landmarks(object):
 
@@ -319,8 +321,7 @@ def load_data(configurations, feature_loaders, landmark_map, softmax='landmarks'
 
     return X_data, action_data, landmark_data, y_data
 
-
-def create_batch(X, landmarks, y, cuda=False):
+def create_batch(X, actions, landmarks, y, cuda=False):
     bsz = len(y)
     batch = dict()
     if 'resnet' in X:
@@ -338,26 +339,23 @@ def create_batch(X, landmarks, y, cuda=False):
             for jj in range(len(X['textrecog'][ii])):
                 batch['textrecog'][ii, jj] = X['textrecog'][ii][jj]
     if 'goldstandard' in X:
-        max_len = max(len(s) for s in X['goldstandard'])
-        batch['goldstandard'] = torch.LongTensor(bsz, max_len).zero_()
+        max_steps = max(len(s) for s in X['goldstandard'])
+        max_len = max([max([len(x) for x in l]) for l in X['goldstandard']])
+        batch['goldstandard'] = torch.LongTensor(bsz, max_steps, max_len).zero_()
         for ii in range(bsz):
             for jj in range(len(X['goldstandard'][ii])):
-                batch['goldstandard'][ii, jj] = X['goldstandard'][ii][jj]
+                for kk in range(len(X['goldstandard'][ii][jj])):
+                    batch['goldstandard'][ii, jj, kk] = X['goldstandard'][ii][jj][kk]
 
-
-    landmark_lens = [len(l) for l in landmarks]
-    max_landmarks = max(landmark_lens)
-    max_landmarks_per_coord = max([max([len(x) for x in l]) for l in landmarks])
-
-    landmark_batch = torch.LongTensor(bsz, max_landmarks, max_landmarks_per_coord).zero_()
-    mask = torch.FloatTensor(bsz, max_landmarks).fill_(0.0)
+    max_landmarks_per_coord = max([max([max([len(y) for y in x]) for x in l]) for l in landmarks])
+    landmark_batch = torch.LongTensor(bsz, 4, 4, max_landmarks_per_coord).zero_()
 
     for i, ls in enumerate(landmarks):
-        for j, l in enumerate(ls):
-            landmark_batch[i, j, :len(l)] = torch.LongTensor(l)
-        mask[i, :len(ls)] = 1.0
+        for j in range(4):
+            for k in range(4):
+                landmark_batch[i, j, k, :len(landmarks[i][j][k])] = torch.LongTensor(landmarks[i][j][k])
 
-    return to_variable((batch, landmark_batch, mask, torch.LongTensor(y).unsqueeze(-1)), cuda=cuda)
+    return to_variable((batch, torch.LongTensor(actions), landmark_batch, torch.LongTensor(y).unsqueeze(-1)), cuda=cuda)
 
 
 def to_variable(obj, cuda=True):

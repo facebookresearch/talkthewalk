@@ -8,10 +8,10 @@ import torch.optim as optim
 
 from torch.autograd import Variable
 from sklearn.utils import shuffle
-from data_loader import Landmarks, step_aware, to_variable
-from modules import CBoW, MASC, NoMASC, ControlStep
-from utils import create_logger
-from dict import Dictionary
+from talkthewalk.data_loader import Landmarks, step_aware, to_variable
+from talkthewalk.modules import CBoW, MASC, NoMASC, ControlStep, PredictConvWeight
+from talkthewalk.utils import create_logger
+from talkthewalk.dict import Dictionary
 
 def get_action(msg):
     msg_to_act = {'ACTION:TURNLEFT': 0, 'ACTION:TURNRIGHT': 1, 'ACTION:FORWARD': 2}
@@ -68,14 +68,15 @@ def create_batch(Xs, landmarks, ys, cuda=False):
     return to_variable([X_batch, mask, landmark_batch, y_batch], cuda=cuda)
 
 
-class LocationPredictor(nn.Module):
+class Guide(nn.Module):
 
-    def __init__(self, inp_emb_sz, hidden_sz, num_tokens, apply_masc=True, T=1):
-        super(LocationPredictor, self).__init__()
+    def __init__(self, inp_emb_sz, hidden_sz, num_tokens, apply_masc=True, apply_full_conv=False, T=1):
+        super(Guide, self).__init__()
         self.hidden_sz = hidden_sz
         self.inp_emb_sz = inp_emb_sz
         self.num_tokens = num_tokens
         self.apply_masc = apply_masc
+        self.apply_full_conv = apply_full_conv
         self.T = T
 
         self.embed_fn = nn.Embedding(num_tokens, inp_emb_sz, padding_idx=0)
@@ -87,10 +88,14 @@ class LocationPredictor(nn.Module):
         self.feat_control_emb = nn.Parameter(torch.FloatTensor(hidden_sz).normal_(0.0, 0.1))
         self.feat_control_step_fn = ControlStep(hidden_sz)
 
-        if apply_masc:
+        if apply_masc or apply_full_conv:
             self.act_control_emb = nn.Parameter(torch.FloatTensor(hidden_sz).normal_(0.0, 0.1))
             self.act_control_step_fn = ControlStep(hidden_sz)
+
+        if apply_masc:
             self.action_linear_fn = nn.Linear(hidden_sz, 9)
+        elif apply_full_conv:
+            self.action_linear_fn = nn.Linear(hidden_sz, 9*hidden_sz*hidden_sz)
 
         self.landmark_write_gate = nn.ParameterList()
         self.obs_write_gate = nn.ParameterList()
@@ -100,6 +105,8 @@ class LocationPredictor(nn.Module):
 
         if apply_masc:
             self.masc_fn = MASC(self.hidden_sz)
+        elif apply_full_conv:
+            self.masc_fn = PredictConvWeight(self.hidden_sz)
         else:
             self.masc_fn = NoMASC(self.hidden_sz)
 
@@ -111,6 +118,7 @@ class LocationPredictor(nn.Module):
         hidden_states, _ = self.encoder_fn(input_emb)
 
         last_state_indices = seq_mask.sum(1).long() - 1
+
         last_hidden_states = hidden_states[torch.arange(batch_size).long(), last_state_indices, :]
         T_dist = F.softmax(self.T_prediction_fn(last_hidden_states))
         sampled_Ts = T_dist.multinomial(1).squeeze()
@@ -131,7 +139,7 @@ class LocationPredictor(nn.Module):
         landmark_emb = self.cbow_fn(landmarks).permute(0, 3, 1, 2)
         landmark_embs = [landmark_emb]
 
-        if self.apply_masc:
+        if self.apply_masc or self.apply_full_conv:
             act_controller = self.act_control_emb.unsqueeze(0).repeat(batch_size, 1)
             for step in range(self.T):
                 extracted_msg, act_controller = self.act_control_step_fn(hidden_states, seq_mask, act_controller)
@@ -155,19 +163,41 @@ class LocationPredictor(nn.Module):
         reward = -(sl_loss - sl_loss.mean())
 
         log_prob = torch.log(torch.gather(T_dist, 1, sampled_Ts.unsqueeze(-1)) + 1e-8)
-        rl_loss = (log_prob*reward).sum()
-        loss = sl_loss.sum() - rl_loss
+        rl_loss = (log_prob*reward)
+        loss = sl_loss - rl_loss
 
         acc = sum([1.0 for pred, target in zip(prob.max(1)[1].data.cpu().numpy(), y_true.data.cpu().numpy()) if
                    pred == target]) / batch_size
         return loss, acc
+
+    def save(self, path):
+        print('Save to: ' + path)
+        state = dict()
+        state['hidden_sz'] = self.hidden_sz
+        state['embed_sz'] = self.inp_emb_sz
+        state['num_tokens'] = self.num_tokens
+        state['apply_masc'] = self.apply_masc
+        state['apply_full_conv'] = self.apply_full_conv
+        state['T'] = self.T
+        state['parameters'] = self.state_dict()
+        torch.save(state, path)
+
+    @classmethod
+    def load(cls, path):
+        state = torch.load(path)
+        apply_full_conv = state.get('apply_full_conv', False)
+        guide = cls(state['embed_sz'], state['hidden_sz'], state['num_tokens'],
+                    T=state['T'], apply_masc=state['apply_masc'],
+                    apply_full_conv=apply_full_conv)
+        guide.load_state_dict(state['parameters'])
+        return guide
 
 def eval_epoch(net, Xs, landmarks, ys, batch_sz, opt=None, cuda=False):
     loss, accs, total = 0.0, 0.0, 0.0
 
     for jj in range(0, len(Xs), batch_sz):
         X_batch, mask, landmark_batch, y_batch = create_batch(Xs[jj:jj + batch_sz], landmarks[jj:jj + batch_sz],
-                                              ys[jj:jj + batch_sz], cuda=cuda)
+                                                              ys[jj:jj + batch_sz], cuda=cuda)
         l, acc = net.forward(X_batch, mask, landmark_batch, y_batch)
         accs += acc
         total += 1
@@ -185,6 +215,7 @@ if __name__ == '__main__':
     parser.add_argument('--cuda', action='store_true')
     parser.add_argument('--last-turns', type=int, default=1)
     parser.add_argument('--masc', action='store_true')
+    parser.add_argument('--apply-full-conv', action='store_true')
     parser.add_argument('--T', type=int, default=2)
     parser.add_argument('--hidden-sz', type=int, default=256)
     parser.add_argument('--embed-sz', type=int, default=128)
@@ -207,7 +238,7 @@ if __name__ == '__main__':
     valid_set = json.load(open(os.path.join(data_dir, 'talkthewalk.valid.json')))
     test_set = json.load(open(os.path.join(data_dir, 'talkthewalk.test.json')))
 
-    dictionary = Dictionary('./data/dict.txt', 3)
+    dictionary = Dictionary(os.path.join(data_dir, 'dict.txt'), 3)
 
     neighborhoods = ['fidi', 'hellskitchen', 'williamsburg', 'uppereast', 'eastvillage']
     landmark_map = Landmarks(neighborhoods, include_empty_corners=True)
@@ -216,7 +247,7 @@ if __name__ == '__main__':
     valid_Xs, valid_landmarks, valid_ys = load_data(valid_set, landmark_map, dictionary, last_turns=args.last_turns)
     test_Xs, test_landmarks, test_ys = load_data(test_set, landmark_map, dictionary, last_turns=args.last_turns)
 
-    net = LocationPredictor(args.embed_sz, args.hidden_sz, len(dictionary), apply_masc=args.masc, T=args.T)
+    net = Guide(args.embed_sz, args.hidden_sz, len(dictionary), apply_masc=args.masc, apply_full_conv=args.apply_full_conv, T=args.T)
 
     if args.cuda:
         net = net.cuda()
@@ -235,6 +266,7 @@ if __name__ == '__main__':
         if valid_acc > best_val_acc:
             best_val_acc = valid_acc
             best_train_acc, best_val_acc, best_test_acc = train_acc, valid_acc, test_acc
+            net.save(os.path.join(exp_dir, 'guide.pt'))
 
     logger.info(best_train_acc)
     logger.info(best_val_acc)
