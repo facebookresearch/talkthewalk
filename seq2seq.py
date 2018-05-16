@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_packed_sequence, pack_padded_sequence
 
 from dict import START_TOKEN, END_TOKEN, PAD_TOKEN
-USE_BEAM_SEARCH = False
+USE_BEAM_SEARCH = True
 
 class BahdanauAttention(nn.Module):
     """
@@ -114,7 +114,6 @@ class Encoder(nn.Module):
             x: inputs, [bsz, T] (after applying forward embedding)
             input_lengths: real lengths of input batch
         """
-        # import pdb; pdb.set_trace()
         embedded, input_lengths = self.forward_embedding(x, input_lengths)
         # embedded = self.dropout_layer(old_embedded)
         packed = pack_padded_sequence(embedded, input_lengths,
@@ -266,7 +265,6 @@ class Decoder(nn.Module):
         # self.to_predict_dropout = nn.Dropout(self.dropout)
 
     def init_hidden(self, encoder_final):
-        # import pdb; pdb.set_trace()
         if self.pass_hidden_state:
             if self.n_layers == 1:
                 if isinstance(encoder_final, tuple):  # LSTM
@@ -360,7 +358,6 @@ class Decoder(nn.Module):
             return_attention: return the attention scores
             return_states: return decoder states
         """
-        # import pdb; pdb.set_trace()
         teacher_force = random.random() < 0.5
         bsz = encoder_outputs.size(0)  # B
         if self.attn_type == 'Bahdanau':
@@ -393,7 +390,6 @@ class Decoder(nn.Module):
                         all_attention_scores.append(alpha)
                     context = alpha.bmm(attention_values)  # (B, 1, D)
                     rnn_input = torch.cat((embedded, context), 2) # (B, 1, D+emb_dim)
-                    # import pdb; pdb.set_trace()
                 else:
                     embedded = embedded.view(1, bsz, -1)
                     if self.rnn_type == 'LSTM':
@@ -411,7 +407,6 @@ class Decoder(nn.Module):
             else:
                 rnn_input = embedded
             dec_out, hidden = self.rnn(rnn_input, hidden)  # hidden (n_layers, B, hsz)
-            # import pdb; pdb.set_trace()
 
             # predict from (top) RNN hidden state directly
             current_state = hidden[0][-1] if isinstance(hidden, tuple) else hidden[-1]  # [B, V]
@@ -459,7 +454,6 @@ class Decoder(nn.Module):
             else:  # feed current predictions to next step
                 embedded = self.embedding(predictions)   # (B, 1, E)
                 # embedded = self.emb_dropout(embedded)
-        # # import pdb; pdb.set_trace()
         all_predictions = torch.cat(all_predictions, 1)  # (B, T)
         all_log_probs = torch.cat(all_log_probs, 1)      # (B, T, V)
 
@@ -485,7 +479,7 @@ class Decoder(nn.Module):
     def forward_beam(self, encoder_outputs=None, encoder_final=None,
                      encoder_mask=None, max_length=0, trg_var=None,
                      return_attention=False,
-                     return_states=True,
+                     return_states=False,
                      width=4,
                      norm_pow=1.0):
 
@@ -509,15 +503,15 @@ class Decoder(nn.Module):
 
         teacher_force = random.random() < 0.5
         batch_size = encoder_outputs.size(0)  # B
-        voc_size = len(self.vocab)
-        live = [[(0.0, [(self.vocab.tok2i[START_TOKEN], 0)], 0)] for _ in range(batch_size)]
-        dead = [[] for _ in range(batch_size)]
-        num_dead = [0 for _ in range(batch_size)]
+        voc_size = len(self.vocab) # V
+        live = [[(0.0, [(self.vocab.tok2i[START_TOKEN], 0)], 0)] for _ in range(batch_size)] # [B, 1, 3]
+        dead = [[] for _ in range(batch_size)] # [B, 1]
+        num_dead = [0 for _ in range(batch_size)] # [B]
 
         embedded = torch.LongTensor(batch_size, 1).fill_(
-                                                self.vocab.tok2i[START_TOKEN])
+                                                self.vocab.tok2i[START_TOKEN]) # [B, 1]
         embedded = embedded.cuda() if self.use_cuda else embedded
-        embedded = self.embedding(embedded)
+        embedded = self.embedding(embedded) # [B, 1, emb_dim]
 
         hidden = self.init_hidden(encoder_final)  # (n_layers, B, hsz)
         all_predictions = []
@@ -532,40 +526,24 @@ class Decoder(nn.Module):
 
         for tidx in range(max_length):
             masks.append(mask)
-            if self.use_attention:
-                if self.attn_type == 'Bahdanau':
-                    query = hidden[0][-1] if isinstance(hidden, tuple) else hidden[-1]  # [B, D]
-                    query = query.unsqueeze(0)  # [1, B, D]
-                    alpha = self.attention(query=query,
-                                           projected_memory=projected_memory,
-                                           mask=encoder_mask)  # (B, 1, T)
-                    if return_attention:
-                        all_attention_scores.append(alpha)
-                    context = alpha.bmm(attention_values)  # (B, 1, D)
-                    rnn_input = torch.cat((embedded, context), 2) # (B, 1, D+emb_dim)
-                else:
-                    embedded = embedded.view(1, batch_size, -1)
-                    if self.rnn_type == 'LSTM':
-                        hidden_attn = hidden[0][0]
-                    else:
-                        hidden_attn = hidden[0]
-                    attn_weights = F.softmax(
-                        self.attn(torch.cat((embedded[0], hidden_attn), 1)), dim=1)
-                    if return_attention:
-                        all_attention_scores.append(attn_weights)
-                    attn_applied = torch.bmm(attn_weights.unsqueeze(0), encoder_outputs.transpose(1, 2).squeeze(1))
-                    output = torch.cat((embedded[0], attn_applied[0]), 1)
-                    output = self.attn_combine(output).unsqueeze(0)
-                    rnn_input = F.relu(output)
+            if self.use_attention and self.attn_type == 'Bahdanau':
+                query = hidden[0][-1] if isinstance(hidden, tuple) else hidden[-1]  # [B, D]
+                query = query.unsqueeze(0)  # [1, B, D]
+                alpha = self.attention(query=query,
+                                       projected_memory=projected_memory,
+                                       mask=encoder_mask)  # (B, 1, T)
+                if return_attention:
+                    all_attention_scores.append(alpha)
+                context = alpha.bmm(attention_values)  # (B, 1, D)
+                rnn_input = torch.cat((embedded, context), 2) # (B, 1, D+emb_dim)
             else:
-                rnn_input = embedded
-            dec_out, hidden = self.rnn(rnn_input, hidden)  # hidden (n_layers, B, hsz)
+                rnn_input = embedded # [B, 1, emb_dim]
+            dec_out, hidden = self.rnn(rnn_input, hidden)  # hidden (n_layers, B, D)
 
             # predict from (top) RNN hidden state directly
-            current_state = hidden[0][-1] if isinstance(hidden, tuple) else hidden[-1]  # [B, V]
-            context = context if self.attn_type == 'Bahdanau' else dec_out
-            if return_states:
-                decoder_states.append(current_state.unsqueeze(0))
+            current_state = hidden[0][-1] if isinstance(hidden, tuple) else hidden[-1]  # [B, D]
+            context = context if self.attn_type == 'Bahdanau' else dec_out # [B, 1, D]
+
             if self.use_prev_word and self.use_dec_state:
                 to_predict = torch.cat(
                                 (current_state.unsqueeze(1),
@@ -578,6 +556,7 @@ class Decoder(nn.Module):
                 to_predict = torch.cat((current_state.unsqueeze(1), context), 2)
             elif not self.use_prev_word and not self.use_dec_state:
                 to_predict = context
+
             to_predict = self.pre_output_layer(to_predict)       # (B, 1, D)
             logits = self.output_layer(to_predict)  # (B, 1, V)
 
@@ -599,7 +578,6 @@ class Decoder(nn.Module):
                     tis = topi_s[bidx][:num_live].view(-1).tolist()
                     tvs = topv_s[bidx][:num_live].view(-1).tolist()
                     for eidx, (topi, topv) in enumerate(zip(tis, tvs)): # NOTE max width times
-                        #TODO: USE THIS EIDX FOR THE PROBABILITY ROWs
                         if topi % voc_size == self.vocab.tok2i[END_TOKEN]:
                             dead[bidx].append((live[bidx][topi//voc_size][0] + topv,
                                                live[bidx][topi//voc_size][1] + [(topi % voc_size, eidx)],
@@ -609,16 +587,13 @@ class Decoder(nn.Module):
                             new_live[bidx].append((live[bidx][topi//voc_size][0] + topv,
                                                    live[bidx][topi//voc_size][1] + [(topi % voc_size, eidx)],
                                                    topi))
-
                 while len(new_live[bidx]) < width:
                     new_live[bidx].append((-99999999,
                                            [0],
                                            0))
             live = new_live
-
             if num_dead == [width for ii in range(batch_size)]:
                 break
-
             if trg_var is not None and teacher_force:  # teacher forcing, feed true targets to next step
                 targets_this_iter = trg_var[:, tidx, None]    # (B, width)
                 preds = torch.LongTensor([[x[2] % voc_size for x in ee] for ee in live])
@@ -640,11 +615,13 @@ class Decoder(nn.Module):
             bb = 1 if tidx == 0 else width
             in_width_idx = torch.LongTensor([[x[2]//voc_size + bbidx * bb for x in ee] for bbidx, ee in enumerate(live)])
             in_width_idx = in_width_idx.cuda() if self.use_cuda else in_width_idx
+
             if self.rnn_type == 'LSTM':
                 context = hidden[1]
                 hidden = hidden[0]
             hidden = hidden.index_select( 1, in_width_idx.view(-1)).view(self.n_layers, -1, self.hidden_size)
-            if tidx == 0 and self.attn_type == 'Bahdanau':
+
+            if tidx == 0 and self.use_attention and self.attn_type == 'Bahdanau':
                 projected_memory = projected_memory.repeat(width, 1, 1)
                 encoder_mask = encoder_mask.repeat(width, 1)
                 attention_values = attention_values.repeat(width, 1, 1)
@@ -660,22 +637,22 @@ class Decoder(nn.Module):
 
         dead_ = [ [ ( float(a) / math.pow(len(b), norm_pow) , b, c) for (a,b,c) in ee] for ee in dead]
         ans = []
-        compiled_log_probs = []
+        # compiled_log_probs = []
         seq_log_probs = []
         for bidx in range(len(dead_)):
-            log_probs = []
+            # log_probs = []
             dd_ = dead_[bidx]
-            probs = [x[0] for x in dd_]
-            max_idx, _ = max(enumerate(probs), key=lambda x: x[1])
-            max_dd = dd_[max_idx]
-            for tidx, (tok, eidx) in enumerate(max_dd[1]):
-                if tidx == len(max_dd[1]) - 1:
-                    continue
-                log_probs.append(all_log_probs[tidx][bidx][eidx])
+            # probs = [x[0] for x in dd_]
+            # max_idx, _ = max(enumerate(probs), key=lambda x: x[1])
+            # max_dd = dd_[max_idx]
+            # for tidx, (tok, eidx) in enumerate(max_dd[1]):
+            #     if tidx == len(max_dd[1]) - 1:
+            #         continue
+            #     log_probs.append(all_log_probs[tidx][bidx][eidx])
             dd = sorted(dd_, key=lambda x: x[0], reverse=True)
             ans.append([x[0] for x in dd[0][1][1:-1]])
             seq_log_probs.append(dd[0][0])
-            compiled_log_probs.append(log_probs)
+            # compiled_log_probs.append(log_probs)
 
         all_predictions = torch.LongTensor(batch_size, max_length).fill_(self.vocab.tok2i[END_TOKEN]) # (B, T)
         for i in range(len(ans)):
@@ -768,14 +745,13 @@ class Seq2Seq(nn.Module):
             encoder_final=encoder_final, encoder_outputs=encoder_outputs,
             encoder_mask=input_mask, max_length=trg_max_length,
             trg_var=decode_target, return_attention=return_attention,
-            beam_search=not train and trg_var is None and USE_BEAM_SEARCH)
+            beam_search=not train and trg_var is None and self.beam_search)
         if trg_var is not None:
             result['loss'] = self.get_loss(result, trg_var)
 
         return result
 
     def get_loss(self, result=None, trg_var=None):
-        # import pdb; pdb.set_trace()
         padding_mask = (trg_var == self.trg_pad_idx)
         if self.use_cuda:
             padding_mask = padding_mask.cuda()
