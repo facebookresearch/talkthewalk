@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_packed_sequence, pack_padded_sequence
 
 from dict import START_TOKEN, END_TOKEN, PAD_TOKEN
-
+USE_BEAM_SEARCH = False
 
 class BahdanauAttention(nn.Module):
     """
@@ -76,15 +76,18 @@ class Encoder(nn.Module):
         self.n_acts = n_acts
         self.use_cuda = torch.cuda.is_available() and args.use_cuda
         self.n_layers = args.n_layers
+        self.use_actions = args.use_actions
         if not args.orientation_aware:
-            self.action_embedding = nn.Embedding(n_acts + 1, self.emb_dim,
-                                                 padding_idx=self.pad_idx)
+            if args.use_actions:
+                self.action_embedding = nn.Embedding(n_acts + 1, self.emb_dim,
+                                                     padding_idx=self.pad_idx)
             self.observation_embedding = nn.Embedding(n_lands + 1, self.emb_dim,
                                                       padding_idx=self.pad_idx)
         else:
-            self.action_embedding = nn.Embedding(n_acts + n_lands + 4,
-                                                 self.emb_dim,
-                                                 padding_idx=self.pad_idx)
+            if args.use_actions:
+                self.action_embedding = nn.Embedding(n_acts + n_lands + 4,
+                                                     self.emb_dim,
+                                                     padding_idx=self.pad_idx)
             self.observation_embedding = nn.Embedding(n_lands + n_acts + 4,
                                                       self.emb_dim,
                                                       padding_idx=self.pad_idx)
@@ -94,7 +97,7 @@ class Encoder(nn.Module):
         else:
             self.resnet_proj_dim = 0
 
-        self.dropout_layer = nn.Dropout(args.dropout)
+        # self.dropout_layer = nn.Dropout(args.dropout)
         if self.rnn_type == 'LSTM':
             self.rnn = nn.LSTM(self.emb_dim + self.resnet_proj_dim, #concatenating resnet and gold standard
                                self.hidden_size, batch_first=True,
@@ -111,14 +114,14 @@ class Encoder(nn.Module):
             x: inputs, [bsz, T] (after applying forward embedding)
             input_lengths: real lengths of input batch
         """
-        embedded = self.forward_embedding(x)
-        embedded = self.dropout_layer(embedded)
+        # import pdb; pdb.set_trace()
+        embedded, input_lengths = self.forward_embedding(x, input_lengths)
+        # embedded = self.dropout_layer(old_embedded)
         packed = pack_padded_sequence(embedded, input_lengths,
                                       batch_first=True)
         outputs, hidden = self.rnn(packed)
         outputs, output_lengths = pad_packed_sequence(outputs,
                                                       batch_first=True)
-
         if self.bidirectional:
             if self.rnn_type == 'LSTM':
                 hidden_h = [torch.cat((hidden[0][i], hidden[0][i + 1]), dim=1)
@@ -135,9 +138,14 @@ class Encoder(nn.Module):
 
         return outputs, hidden, embedded
 
-    def forward_embedding(self, x):
+    def forward_embedding(self, x, in_lengths):
         bsz = len(x)
-        emb_size = len(x[0])
+        if self.use_actions:
+            emb_size = len(x[0])
+            input_lengths = in_lengths
+        else:
+            emb_size = max(len([y for y in z if type(y) == dict]) for z in x)
+            input_lengths = [len([y for y in z if type(y) == dict]) for z in x]
         emb_x = torch.FloatTensor(bsz, emb_size, self.emb_dim).zero_()
         if self.use_resnet:
             res_feats = torch.FloatTensor(bsz, emb_size, self.resnet_proj_dim).zero_()
@@ -147,17 +155,21 @@ class Encoder(nn.Module):
                 res_feats = res_feats.cuda()
         for i in range(bsz):
             ex = x[i]
-            for j in range(len(ex)):
-                a_or_o = ex[j]
+            j = 0
+            for jj in range(len(ex)):
+                a_or_o = ex[jj]
                 res_feat = torch.Tensor(self.resnet_proj_dim).zero_()
+                gold_emb = None
                 if self.use_cuda:
                     res_feat = res_feat.cuda()
                 if type(a_or_o) is dict:  # list of observations
                     gold_emb = torch.Tensor(self.emb_dim).zero_()
+                    num_obs = 0
                     if self.use_cuda:
                         gold_emb = gold_emb.cuda()
                     for k, feats in a_or_o.items():
                         for obs in feats:
+                            num_obs += 1
                             if type(obs) is list: #resnet features
                                 obs_tens = torch.FloatTensor(obs)
                                 if self.use_cuda:
@@ -169,19 +181,21 @@ class Encoder(nn.Module):
                                 if self.use_cuda:
                                     obs_tens = obs_tens.cuda()
                                 gold_emb += self.observation_embedding(obs_tens).view(-1)
-                else:  # action
+                        gold_emb /= max(num_obs, 1)
+                elif self.use_actions:  # action
                     act = torch.LongTensor([a_or_o])
                     if self.use_cuda:
                         act = act.cuda()
                     gold_emb = self.action_embedding(act)
-
-                emb_x[i, j] = gold_emb
+                if gold_emb is not None:
+                    emb_x[i, j] = gold_emb
+                    j += 1
                 if self.use_resnet:
                     res_feats[i, j] = res_feat
         if self.use_resnet:
-            return torch.cat((emb_x, res_feats), 2)
+            return torch.cat((emb_x, res_feats), 2), input_lengths
         else:
-            return emb_x
+            return emb_x, input_lengths
 
 
 class Decoder(nn.Module):
@@ -249,9 +263,10 @@ class Decoder(nn.Module):
         # output layer from context vector and current decoder state to n_words
         self.output_layer = nn.Linear(self.hidden_size, n_words)
         self.emb_dropout = nn.Dropout(self.dropout)
-        self.to_predict_dropout = nn.Dropout(self.dropout)
+        # self.to_predict_dropout = nn.Dropout(self.dropout)
 
     def init_hidden(self, encoder_final):
+        # import pdb; pdb.set_trace()
         if self.pass_hidden_state:
             if self.n_layers == 1:
                 if isinstance(encoder_final, tuple):  # LSTM
@@ -345,6 +360,7 @@ class Decoder(nn.Module):
             return_attention: return the attention scores
             return_states: return decoder states
         """
+        # import pdb; pdb.set_trace()
         teacher_force = random.random() < 0.5
         bsz = encoder_outputs.size(0)  # B
         if self.attn_type == 'Bahdanau':
@@ -364,7 +380,6 @@ class Decoder(nn.Module):
         # mask everything after </s> was generated
         mask = torch.ones([bsz, 1]).byte()
         mask = mask.cuda() if self.use_cuda else mask
-
         for i in range(max_length):
             masks.append(mask)
             if self.use_attention:
@@ -378,6 +393,7 @@ class Decoder(nn.Module):
                         all_attention_scores.append(alpha)
                     context = alpha.bmm(attention_values)  # (B, 1, D)
                     rnn_input = torch.cat((embedded, context), 2) # (B, 1, D+emb_dim)
+                    # import pdb; pdb.set_trace()
                 else:
                     embedded = embedded.view(1, bsz, -1)
                     if self.rnn_type == 'LSTM':
@@ -395,6 +411,7 @@ class Decoder(nn.Module):
             else:
                 rnn_input = embedded
             dec_out, hidden = self.rnn(rnn_input, hidden)  # hidden (n_layers, B, hsz)
+            # import pdb; pdb.set_trace()
 
             # predict from (top) RNN hidden state directly
             current_state = hidden[0][-1] if isinstance(hidden, tuple) else hidden[-1]  # [B, V]
@@ -438,14 +455,13 @@ class Decoder(nn.Module):
             if trg_var is not None and teacher_force:  # teacher forcing, feed true targets to next step
                 targets_this_iter = trg_var[:, i, None]       # (B, 1)
                 embedded = self.embedding(targets_this_iter)  # (B, 1, E)
-                embedded = self.emb_dropout(embedded)
+                # embedded = self.emb_dropout(embedded)
             else:  # feed current predictions to next step
                 embedded = self.embedding(predictions)   # (B, 1, E)
-                embedded = self.emb_dropout(embedded)
-
+                # embedded = self.emb_dropout(embedded)
+        # # import pdb; pdb.set_trace()
         all_predictions = torch.cat(all_predictions, 1)  # (B, T)
         all_log_probs = torch.cat(all_log_probs, 1)      # (B, T, V)
-        mask = torch.cat(masks, 1)
 
         if return_states:
             decoder_states = torch.cat(decoder_states, 0)    # (T, B, D)
@@ -700,8 +716,9 @@ class Seq2Seq(nn.Module):
         self.src_pad_idx = vocab_src.tok2i[PAD_TOKEN]
         self.trg_pad_idx = vocab_trg.tok2i[PAD_TOKEN]
 
-        self.criterion = nn.NLLLoss(reduce=False, size_average=False,
-                                    ignore_index=self.trg_pad_idx)
+        # self.criterion = nn.NLLLoss(reduce=False, size_average=False,
+        #                             ignore_index=self.trg_pad_idx)
+        self.beam_search = args.beam_search
         self.encoder = Encoder(args,
                                n_lands=n_lands,
                                n_acts=n_acts,
@@ -751,13 +768,14 @@ class Seq2Seq(nn.Module):
             encoder_final=encoder_final, encoder_outputs=encoder_outputs,
             encoder_mask=input_mask, max_length=trg_max_length,
             trg_var=decode_target, return_attention=return_attention,
-            beam_search=not train and trg_var is None)
+            beam_search=not train and trg_var is None and USE_BEAM_SEARCH)
         if trg_var is not None:
             result['loss'] = self.get_loss(result, trg_var)
 
         return result
 
     def get_loss(self, result=None, trg_var=None):
+        # import pdb; pdb.set_trace()
         padding_mask = (trg_var == self.trg_pad_idx)
         if self.use_cuda:
             padding_mask = padding_mask.cuda()
