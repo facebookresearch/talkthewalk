@@ -168,7 +168,7 @@ class Tourist(nn.Module):
         batch_size = seq_lens.size(0)
         return states[torch.arange(batch_size).long(), seq_lens - 1, :]
 
-    def forward(self, observations, obs_seq_len, actions, act_seq_len, gt_messages=None, gt_mask=None, sample=True, max_sample_length=20):
+    def forward(self, observations, obs_seq_len, actions, act_seq_len, gt_messages=None, gt_mask=None, sample=True, max_sample_length=20, greedy=False):
         batch_size = observations.size(0)
 
         obs_inp_emb = self.obs_emb_fn(observations)
@@ -241,7 +241,11 @@ class Tourist(nn.Module):
                 _, hs = self.decoder(inp_emb, hs)
 
                 prob = F.softmax(self.out_linear(hs.squeeze(0)), dim=-1)
-                samples = prob.multinomial(1)
+                if greedy:
+                    _, samples = prob.max(1)
+                    samples = samples.unsqueeze(-1)
+                else:
+                    samples = prob.multinomial(1)
                 mask[:, k] = 1.0 - eos.float()
 
                 eos = eos | (samples == self.end_token).squeeze()
@@ -303,7 +307,9 @@ def show_samples(data, tourist, dictionary, landmark_map, num_samples=10, cuda=T
 
     out = tourist.forward(obs_batch, obs_seq_len, act_batch, act_seq_len,
                           gt_messages=message_batch, gt_mask=mask_batch,
-                          sample=True)
+                          sample=True, greedy=True)
+
+
 
     preds = out['preds'].cpu().data
     logger_fn = print
