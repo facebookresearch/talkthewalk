@@ -112,7 +112,7 @@ class Guide(nn.Module):
 
         self.loss = nn.CrossEntropyLoss()
 
-    def forward(self, Xs, seq_mask, landmarks, ys):
+    def forward(self, Xs, seq_mask, landmarks, ys, add_rl_loss=False):
         batch_size = Xs.size(0)
         input_emb = self.embed_fn(Xs)
         hidden_states, _ = self.encoder_fn(input_emb)
@@ -160,11 +160,13 @@ class Guide(nn.Module):
 
         sl_loss = -torch.log(torch.gather(prob, 1, y_true.unsqueeze(-1)) + 1e-8)
         # add RL loss
-        reward = -(sl_loss - sl_loss.mean())
+        loss = sl_loss
+        if add_rl_loss:
+            reward = -(sl_loss - sl_loss.mean())
 
-        log_prob = torch.log(torch.gather(T_dist, 1, sampled_Ts.unsqueeze(-1)) + 1e-8)
-        rl_loss = (log_prob*reward)
-        loss = sl_loss - rl_loss
+            log_prob = torch.log(torch.gather(T_dist, 1, sampled_Ts.unsqueeze(-1)) + 1e-8)
+            rl_loss = (log_prob*reward)
+            loss = sl_loss - rl_loss
 
         acc = sum([1.0 for pred, target in zip(prob.max(1)[1].data.cpu().numpy(), y_true.data.cpu().numpy()) if
                    pred == target]) / batch_size

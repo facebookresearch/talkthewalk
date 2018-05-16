@@ -62,7 +62,7 @@ def epoch(data, tourist, guide, g_opt=None, t_opt=None, batch_sz=256, cuda=True)
 
         loss, acc = guide.forward(msg['preds'], msg['mask'], landmark_batch, tgt_batch)
 
-        reward = loss.squeeze()
+        reward = -loss.squeeze()
         loss = loss.sum()
 
         total += batch_sz

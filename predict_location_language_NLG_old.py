@@ -232,7 +232,7 @@ if __name__ == '__main__':
     parser.add_argument('--learningrate', type=float, default=.001)
     parser.add_argument('--min-word-freq', type=int, default=1)
 
-    parser.add_argument('--dict-file', type=str, default='dict.txt')
+    parser.add_argument('--text_dict-file', type=str, default='text_dict.txt')
     parser.add_argument('--temp-build', type='bool', default=False)
     parser.add_argument('--fill-padding-mask', type='bool', default=True)
     parser.add_argument('--min-sent-length', type=int, default=0)
