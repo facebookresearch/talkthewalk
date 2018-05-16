@@ -427,6 +427,7 @@ class TrainLanguageGenerator(object):
                                                      max_length=max_len,
                                                      return_attention=True)
                             pred = res['preds'][0, :].tolist()
+                            import pdb; pdb.set_trace()
                             dialogue.append(self.dictionary.encode(self.dictionary.decode(pred), include_end=False))
                             utt = [y for x in dialogue[-num_past_utterances:] for y in x] + [self.dictionary[END_TOKEN]]
                             Xs.append(utt)

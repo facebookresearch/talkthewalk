@@ -180,6 +180,7 @@ def eval_epoch(net, Xs, landmarks, ys, batch_sz, model_trainer, opt=None, use_cu
     for jj in range(0, len(Xs), batch_sz):
         X_batch, mask, landmark_batch, y_batch = create_batch(Xs[jj:jj + batch_sz], landmarks[jj:jj + batch_sz],
                                               ys[jj:jj + batch_sz], cuda=use_cuda)
+        import pdb; pdb.set_trace()
         l, acc = net.forward(X_batch, mask, landmark_batch, y_batch)
         accs += acc
         total += 1
