@@ -432,15 +432,8 @@ class Decoder(nn.Module):
             all_log_probs.append(log_probs)
 
             if self.sample_tokens:
-                predictions = torch.LongTensor(bsz, 1).fill_(self.pad_idx)
                 probs = F.softmax(logits, 2)
-                for j in range(bsz):
-                    probs_j = probs[j][0].tolist()
-                    under_1 = (1-sum(probs_j))
-                    probs_j[0] += under_1
-                    predictions[j] = int(np.random.choice(range(self.n_words), p=probs_j))
-                if self.use_cuda:
-                    predictions = predictions.cuda()
+                predictions = torch.multinomial(probs.squeeze(1), 1)
             else:
                 predictions = log_probs.max(2)[1]  # [B, 1]
             all_predictions.append(predictions)
@@ -654,10 +647,10 @@ class Decoder(nn.Module):
             seq_log_probs.append(dd[0][0])
             # compiled_log_probs.append(log_probs)
 
-        all_predictions = torch.LongTensor(batch_size, max_length).fill_(self.vocab.tok2i[END_TOKEN]) # (B, T)
+        all_predictions = torch.LongTensor(batch_size, max_length).fill_(self.vocab.tok2i[PAD_TOKEN]) # (B, T)
         for i in range(len(ans)):
             pred = ans[i]
-            all_predictions[i, :len(pred)] = torch.LongTensor(pred)
+            all_predictions[i, :len(pred)+1] = torch.LongTensor(pred + [self.vocab.tok2i[END_TOKEN]])
         all_predictions = all_predictions.cuda() if self.use_cuda else all_predictions
 
         all_log_probs = seq_log_probs
@@ -670,7 +663,6 @@ class Decoder(nn.Module):
             decoder_states = None
         all_attention_scores = None
 
-        mask = torch.cat(masks, 1)
         return {'preds': all_predictions,
                 'log_probs': all_log_probs,
                 'att_scores': all_attention_scores,
