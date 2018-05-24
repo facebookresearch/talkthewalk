@@ -7,9 +7,9 @@ import copy
 import time
 import numpy
 
-from data_loader import create_obs_dict, Landmarks, load_features, FasttextFeatures, GoldstandardFeatures, ResnetFeatures, step_aware
+from data_loader import create_obs_dict, Map, load_features, FasttextFeatures, GoldstandardFeatures, ResnetFeatures, step_aware
 from predict_location_continuous import create_batch, LocationPredictor
-from predict_location_discrete import Tourist, Guide
+from predict_location_discrete import TouristDiscrete, GuideDiscrete
 
 
 landmarks = {}
@@ -40,7 +40,7 @@ def evaluate(configs, predict_location_fn, landmark_map, feature_loaders, random
                  'landmarks': get_landmarks(neighborhood, boundaries),
                  'dialog': []}
 
-        landmarks, target_index = landmark_map.get_landmarks_2d(config['neighborhood'], boundaries, target_loc)
+        landmarks, target_index = landmark_map.get_landmarks(config['neighborhood'], boundaries, target_loc)
 
         flat_target_index = target_index[0]*4 + target_index[1]
 
@@ -141,7 +141,7 @@ if __name__ == '__main__':
 
     # Load data
     neighborhoods = ['fidi', 'hellskitchen', 'williamsburg', 'uppereast', 'eastvillage']
-    landmark_map = Landmarks(neighborhoods, include_empty_corners=True)
+    landmark_map = Map(neighborhoods, include_empty_corners=True)
 
     data_dir = './data'
     feature_loaders = dict()
@@ -171,8 +171,8 @@ if __name__ == '__main__':
         T = net.T
 
     else:
-        tourist = Tourist.load(args.tourist_model)
-        guide = Guide.load(args.guide_model)
+        tourist = TouristDiscrete.load(args.tourist_model)
+        guide = GuideDiscrete.load(args.guide_model)
         if args.cuda:
             tourist = tourist.cuda()
             guide = guide.cuda()

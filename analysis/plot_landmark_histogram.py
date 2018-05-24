@@ -1,14 +1,17 @@
 import os
-import numpy
-from classify_landmarks import load_data
-from data_loader import ResnetFeatures, Landmarks
+
 import matplotlib.pyplot as plt
+import numpy
+
+from ttw.classify_landmarks import load_data
+from ttw.data_loader import ResnetFeatures, Map
+
 plt.switch_backend('agg')
 plt.style.use('ggplot')
 
 if __name__ == '__main__':
     neighborhoods = ['fidi', 'hellskitchen', 'williamsburg', 'uppereast', 'eastvillage']
-    landmarks = Landmarks(neighborhoods)
+    landmarks = Map(neighborhoods)
     data_dir = './data'
 
     feature_loaders = dict()

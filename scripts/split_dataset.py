@@ -47,7 +47,6 @@ def get_configurations(neighborhoods):
                             key2set[(neighborhood, minimum_x, minimum_y)] = 'valid'
                             valid_configurations.append(config)
                             cnt += 1
-        print(neighborhood, cnt/16)
     return train_configurations, valid_configurations, test_configurations
 
 train_configurations, valid_configurations, test_configurations = get_configurations(neighborhoods)
@@ -86,10 +85,6 @@ for dialogue in data:
     else:
         if key not in not_included:
             not_included[key] = True
-
-print(len(train_dialogues))
-print(len(valid_dialogues))
-print(len(test_dialogues))
 
 with open('talkthewalk.train.json', 'w') as f:
     json.dump(train_dialogues, f)

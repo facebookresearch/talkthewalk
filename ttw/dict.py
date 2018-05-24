@@ -21,7 +21,6 @@ def split_tokenize(text):
 
 
 class Dictionary:
-
     def __init__(self, file=None, min_freq=0, split=False):
         self.i2tok = list()
         self.tok2i = dict()
@@ -71,7 +70,6 @@ class Dictionary:
         return ' '.join(res)
 
     def add(self, msg):
-        # for tok in self.tokenizer.tokenize(msg):
         for tok in split_tokenize(msg):
             if tok not in self.tok2i:
                 self.tok2cnt[tok] = 0
@@ -90,13 +88,11 @@ class Dictionary:
 
 
 if __name__ == '__main__':
-    # data_dir = os.environ.get('TALKTHEWALK_DATADIR', './data')
     data_dir = './data'
+
     train_set = json.load(open(os.path.join(data_dir, 'talkthewalk.train.json')))
     valid_set = json.load(open(os.path.join(data_dir, 'talkthewalk.valid.json')))
     test_set = json.load(open(os.path.join(data_dir, 'talkthewalk.test.json')))
-
-    # dictionary = Dictionary('./data/text_dict.txt', 3)
 
     dictionary = Dictionary()
     for set in [train_set, valid_set, test_set]:

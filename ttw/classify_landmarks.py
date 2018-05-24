@@ -1,24 +1,23 @@
 import argparse
-import json
-import random
-import numpy
 import os
+import random
+
+import numpy
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
-from torch.autograd import Variable
-
+from matplotlib import pyplot as plt
 from sklearn.metrics import f1_score, precision_score, recall_score
 from sklearn.neighbors import KNeighborsClassifier
-from matplotlib import pyplot as plt
+from torch.autograd import Variable
+
 plt.switch_backend('agg')
 
-from data_loader import Landmarks, create_obs_dict, load_features, ResnetFeatures, FasttextFeatures, TextrecogFeatures, to_variable, get_orientation_keys
-from utils import create_logger
+from data_loader import Map, create_obs_dict, load_features, ResnetFeatures, FasttextFeatures, TextrecogFeatures, to_variable
+from ttw.utils import create_logger
 
 neighborhoods = ['fidi', 'uppereast', 'eastvillage', 'williamsburg', 'hellskitchen']
-landmarks = Landmarks(neighborhoods)
+landmarks = Map(neighborhoods)
 
 def create_split(Xs, ys):
     random.seed(1)
@@ -159,7 +158,7 @@ if __name__ == '__main__':
 
     print(args)
     neighborhoods = ['fidi', 'hellskitchen', 'williamsburg', 'uppereast', 'eastvillage']
-    landmarks = Landmarks(neighborhoods)
+    landmarks = Map(neighborhoods)
     data_dir = './data'
 
     feature_loaders = dict()

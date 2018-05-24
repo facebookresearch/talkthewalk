@@ -1,9 +1,20 @@
-# talkthewalk
-
-# Dependencies
-- PyTorch 0.4
-- Numpy
+# General
+This repository contains code to reproduce experiments
+from the paper ``Talk The Walk: Navigating New York City Through Grounded Dialogue''.
 
 
-# Env variables
-TALKTHEWALK_EXPDIR = directory to save exp
+# Getting started
+
+## Creating environment
+
+## Downloading data
+
+## Running emergent language experiments
+
+## Running natural language experiments
+
+## Evaluating on full task
+
+## Running landmark classification experiments
+
+

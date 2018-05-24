@@ -4,7 +4,7 @@ import os
 import json
 import random
 import itertools
-from data_loader import Landmarks, GoldstandardFeatures, step_agnostic, step_aware
+from data_loader import Map, GoldstandardFeatures, step_agnostic, step_aware
 
 
 def init_paths_agnostic(neighborhood, boundaries, goldstandard_features):
@@ -114,7 +114,7 @@ if __name__ == '__main__':
     test_configs = json.load(open(os.path.join(data_dir, 'configurations.test.json')))
 
     neighborhoods = ['fidi', 'hellskitchen', 'williamsburg', 'uppereast', 'eastvillage']
-    landmark_map = Landmarks(neighborhoods, include_empty_corners=True)
+    landmark_map = Map(neighborhoods, include_empty_corners=True)
 
     orientation_aware = False
     if orientation_aware:
