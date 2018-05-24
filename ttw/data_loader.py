@@ -85,10 +85,11 @@ class TalkTheWalkLanguage(object):
 
     neighborhoods = ['hellskitchen', 'williamsburg', 'eastvillage', 'fidi', 'uppereast']
 
-    def __init__(self, data_dir, set, last_turns=1, min_freq=3, min_sent_len=2, orientation_aware=False):
+    def __init__(self, data_dir, set, last_turns=1, min_freq=3, min_sent_len=2, orientation_aware=False, include_guide_utterances=True):
         self.dialogues = json.load(open(os.path.join(data_dir, 'talkthewalk.{}.json'.format(set))))
         self.dict = Dictionary(file=os.path.join(data_dir, 'dict.txt'), min_freq=min_freq)
         self.map = Map(data_dir, TalkTheWalkLanguage.neighborhoods, include_empty_corners=True)
+        self.act_dict = ActionDictionary()
 
         self.feature_loader = GoldstandardFeatures(self.map)
 
@@ -109,23 +110,24 @@ class TalkTheWalkLanguage(object):
             dialogue_context = list()
             for msg in config['dialog']:
                 if msg['id'] == 'Tourist':
-                    act = self.get_action(msg['text'])
-                    if act is not None:
-                        new_loc = step_aware(act - 1, loc, boundaries)
+                    act_id = self.act_dict.encode_aware(msg['text'])
+                    if act_id >= 0:
+                        new_loc = step_aware(act_id, loc, boundaries)
                         old_loc = loc
                         loc = new_loc
 
                         if orientation_aware:
-                            act_memory.append(act)
+                            act_memory.append(act_id)
                             obs_memory.append(self.feature_loader.get(neighborhood, new_loc))
                         else:
-                            if act == 2:  # went forward
-                                act_dir = self.get_new_action(old_loc, new_loc)
+                            if self.act_dict.decode_aware(act_id) == 'ACTION:FORWARD':  # went forward
+                                act_dir = self.act_dict.encode_agnostic(old_loc, new_loc)
                                 act_memory.append(act_dir)
                                 obs_memory.append(self.feature_loader.get(neighborhood, loc))
                     elif len(msg['text'].split(' ')) > min_sent_len:
                         dialogue_context.append(self.dict.encode(msg['text']))
-                        utt = [y for x in dialogue_context[-last_turns:] for y in x]
+                        utt = self.dict.encode(START_TOKEN) + [y for x in dialogue_context[-last_turns:] for y in x]\
+                              + self.dict.encode(END_TOKEN)
                         self.data['utterance'].append(utt)
 
                         landmarks, tgt = self.map.get_landmarks(config['neighborhood'], boundaries, loc)
@@ -137,34 +139,8 @@ class TalkTheWalkLanguage(object):
 
                         act_memory = list()
                         obs_memory = [self.feature_loader.get(neighborhood, loc)]
-                else:
+                elif include_guide_utterances:
                     dialogue_context.append(self.dict.encode(msg['text']))
-
-    def get_action(self, msg):
-        msg_to_act = {'ACTION:TURNLEFT': 0, 'ACTION:TURNRIGHT': 1, 'ACTION:FORWARD': 2}
-        return msg_to_act.get(msg, None)
-
-    # Determine if tourist went "up", "down", "left", "right"
-    def get_new_action(self, old_loc, new_loc):
-        act_to_idx = {'LEFT': 1, 'UP': 2, 'RIGHT': 3, 'DOWN': 4, 'STAYED': 5}
-        step_to_dir = {
-            0: {
-                1: 'N',
-                -1: 'S',
-                0: 'STAYED'
-            },
-            1: {
-                0: 'E',
-            },
-            -1: {
-                0: 'W'
-            }
-        }
-        dir_to_act = {'N': 'UP', 'E': 'RIGHT', 'S': 'DOWN', 'W': 'LEFT', 'STAYED': 'STAYED'}
-
-        step = [new_loc[0] - old_loc[0], new_loc[1] - old_loc[1]]
-        direction = step_to_dir[step[0]][step[1]]
-        return act_to_idx[dir_to_act[direction]]
 
 
     def __getitem__(self, index):
@@ -188,6 +164,54 @@ class LandmarkDictionary(object):
 
     def __len__(self):
         return len(self.i2landmark) + 1
+
+class ActionDictionary(object):
+    def __init__(self, orientation_aware=False):
+        self.orientation_aware = orientation_aware
+        self.aware_id2act = ['ACTION:TURNLEFT', 'ACTION:TURNRIGHT', 'ACTION:FORWARD']
+        self.aware_act2id = {v: k for k, v in enumerate(self.aware_id2act)}
+
+        self.agnostic_id2act = ['LEFT', 'UP', 'RIGHT', 'DOWN', 'STAYED']
+        self.agnostic_act2id = {v: k for k, v in enumerate(self.agnostic_id2act)}
+
+
+    def encode_aware(self, msg):
+        if msg in self.aware_act2id:
+            return self.aware_act2id[msg]+1
+        return -1
+
+    def decode_aware(self, id):
+        return self.aware_id2act[id-1]
+
+        # Determine if tourist went "up", "down", "left", "right"
+
+    def encode_agnostic(self, old_loc, new_loc):
+        step_to_dir = {
+            0: {
+                1: 'UP',
+                -1: 'DOWN',
+                0: 'STAYED'
+            },
+            1: {
+                0: 'LEFT',
+            },
+            -1: {
+                0: 'RIGHT'
+            }
+        }
+
+        step = [new_loc[0] - old_loc[0], new_loc[1] - old_loc[1]]
+        act = self.agnostic_act2id[step_to_dir[step[0]][step[1]]]
+        return act + 1
+
+    def decode_agnostic(self, id):
+        return self.agnostic_id2act[id-1]
+
+    def __len__(self):
+        if not self.orientation_aware:
+            return len(self.agnostic_id2act) + 1
+        else:
+            return len(self.aware_id2act) + 1
 
 
 class Map(object):
@@ -410,6 +434,7 @@ def step_agnostic(action, loc, boundaries):
 
 
 def step_aware(action, loc, boundaries):
+    act_dict = ActionDictionary()
     orientations = ['N', 'E', 'S', 'W']
     steps = dict()
     steps['N'] = [0, 1]
@@ -418,15 +443,15 @@ def step_aware(action, loc, boundaries):
     steps['W'] = [-1, 0]
 
     new_loc = copy.deepcopy(loc)
-    if action == 0:
+    if act_dict.decode_aware(action) == 'ACTION:TURNLEFT':
         # turn left
         new_loc[2] = (new_loc[2] - 1) % 4
 
-    if action == 1:
+    if act_dict.decode_aware(action) == 'ACTION:TURNRIGHT':
         # turn right
         new_loc[2] = (new_loc[2] + 1) % 4
 
-    if action == 2:
+    if act_dict.decode_aware(action) == 'ACTION:FORWARD':
         # move forward
         orientation = orientations[loc[2]]
         new_loc[0] = new_loc[0] + steps[orientation][0]

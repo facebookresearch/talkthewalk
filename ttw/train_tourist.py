@@ -109,22 +109,18 @@ class TouristLanguage(nn.Module):
             out['loss'] = loss
         else:
             if decoding_strategy in ['greedy', 'sample']:
-                input_ind = torch.LongTensor([self.start_token]*batch_size)
-                if actions.is_cuda:
-                    input_ind = input_ind.cuda()
-
                 preds = []
                 probs = []
 
+                input_ind = torch.LongTensor([self.start_token] * batch_size)
                 hs = Variable(torch.FloatTensor(1, batch_size, self.decoder_hid_sz).fill_(0.0))
-                if observations.is_cuda:
-                    hs = hs.cuda()
-
                 mask = Variable(torch.FloatTensor(batch_size, max_sample_length).zero_())
                 eos = torch.ByteTensor([0]*batch_size)
-                if observations.is_cuda:
+                if batch['observations'].is_cuda:
+                    hs = hs.cuda()
                     eos = eos.cuda()
                     mask = mask.cuda()
+                    input_ind = input_ind.cuda()
 
                 for k in range(max_sample_length):
                     inp_emb = self.emb_fn.forward(input_ind.unsqueeze(-1))
@@ -144,10 +140,10 @@ class TouristLanguage(nn.Module):
 
                     eos = eos | (samples == self.end_token).squeeze()
 
-
                     preds.append(samples)
                     probs.append(prob.unsqueeze(1))
                     input_ind = samples.squeeze()
+
                 out = {}
                 out['preds'] = torch.cat(preds, 1)
                 out['mask'] = mask
@@ -164,7 +160,7 @@ class TouristLanguage(nn.Module):
 
                     return words, logprobs, hs
 
-                seq_gen = SequenceGenerator(_step_fn, self.end_token, max_sequence_length=max_sample_length, beam_size=4, length_normalization_factor=0.8)
+                seq_gen = SequenceGenerator(_step_fn, self.end_token, max_sequence_length=max_sample_length, beam_size=10, length_normalization_factor=0.8)
                 start_tokens = [[self.start_token] for _ in range(batch_size)]
                 hidden = [[0.0]*self.decoder_hid_sz]*batch_size
                 beam_out = seq_gen.beam_search(start_tokens, hidden, context_emb.cpu().data.numpy())
@@ -172,14 +168,14 @@ class TouristLanguage(nn.Module):
                 mask_tensor = torch.FloatTensor(batch_size, max_sample_length).zero_()
 
                 for i, seq in enumerate(beam_out):
-                    pred_tensor[i, :len(seq.output)] = torch.LongTensor(seq.output)
-                    mask_tensor[i, :len(seq.output)] = 1.0
+                    pred_tensor[i, :len(seq.output)] = torch.LongTensor(seq.output[1:])
+                    mask_tensor[i, :(len(seq.output)-1)] = 1.0
 
                 out = {}
                 out['preds'] = Variable(pred_tensor)
                 out['mask'] = Variable(mask_tensor)
 
-                if observations.is_cuda:
+                if batch['observations'].is_cuda:
                     out['preds'] = out['preds'].cuda()
                     out['mask'] = out['mask'].cuda()
 
@@ -223,48 +219,36 @@ class TouristLanguage(nn.Module):
         return tourist
 
 
-def show_samples(data, tourist, dictionary, landmark_map, num_samples=10, cuda=True, logger=None, decoding_strategy='sample', indices=None):
-    length = len(data[0])
-    observations = []
-    actions = []
-    messages = []
-
-    if indices is not None:
-        l = len(indices)
-        for index in indices:
-            observations.append(data[0][index])
-            actions.append(data[1][index])
-            messages.append(data[2][index])
-    else:
-        l = num_samples
+def show_samples(dataset, tourist, num_samples=10, cuda=True, logger=None, decoding_strategy='sample', indices=None):
+    if indices is None:
+        indices = list()
         for _ in range(num_samples):
-            index = random.randint(0, length-1)
-            observations.append(data[0][index])
-            actions.append(data[1][index])
-            messages.append(data[2][index])
+            indices.append(random.randint(0, len(dataset)-1))
 
-    batch = create_batch(observations, actions, messages, cuda=cuda)
-    obs_batch, obs_seq_len, act_batch, act_seq_len, message_batch, mask_batch = batch
+    collate_fn = get_collate_fn(cuda)
 
-    out = tourist.forward(obs_batch, obs_seq_len, act_batch, act_seq_len,
-                          gt_messages=message_batch, gt_mask=mask_batch,
+    data = [dataset[ind] for ind in indices]
+    batch = collate_fn(data)
+
+    out = tourist.forward(batch,
                           decoding_strategy=decoding_strategy, train=False)
 
     preds = out['preds'].cpu().data
     logger_fn = print
     if logger:
         logger_fn = logger
-    i2act = {1: 'LEFT', 2: 'UP', 3: 'RIGHT',4: 'DOWN', 5: 'STAYED'}
-    for i in range(l):
+
+    for i in range(len(indices)):
         o = ''
-        for obs in observations[i]:
-            o += '(' + ','.join([landmark_map.i2landmark[o_ind-1] for o_ind in obs]) + ') ,'
-        a = ', '.join([i2act[a_ind] for a_ind in actions[i]])
+        for obs in data[i]['observations']:
+            o += '(' + ','.join([dataset.map.landmark_dict.decode(o_ind) for o_ind in obs]) + ') ,'
+        # a = ', '.join([i2act[a_ind] for a_ind in actions[i]])
+        a = ','.join([dataset.act_dict.decode_agnostic(a_ind) for a_ind in data[i]['actions']])
 
         logger_fn('Observations: ' + o)
         logger_fn('Actions: ' + a)
-        logger_fn('GT: ' + dictionary.decode(messages[i][1:]))
-        logger_fn('Sample: ' + dictionary.decode(preds[i, :]))
+        logger_fn('GT: ' + dataset.dict.decode(batch['utterance'][i, 1:]))
+        logger_fn('Sample: ' + dataset.dict.decode(preds[i, :]))
         logger_fn('-'*80)
 
 def eval_epoch(loader, tourist, opt=None):
@@ -286,10 +270,12 @@ def eval_epoch(loader, tourist, opt=None):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--cuda', action='store_true')
+    parser.add_argument('--data-dir', type=str, default='./data')
+    parser.add_argument('--exp-dir', type=str, default='./exp')
     parser.add_argument('--act-emb-sz', type=int, default=32)
     parser.add_argument('--act-hid-sz', type=int, default=128)
     parser.add_argument('--obs-emb-sz', type=int, default=32)
-    parser.add_argument('--obs-hid-sz', type=int, default=256)
+    parser.add_argument('--obs-hid-sz', type=int, default=128)
     parser.add_argument('--decoder-emb-sz', type=int, default=128)
     parser.add_argument('--decoder-hid-sz', type=int, default=512)
     parser.add_argument('--batch-sz', type=int, default=128)
@@ -298,22 +284,22 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    exp_dir = os.path.join(os.environ['TALKTHEWALK_EXPDIR'], args.exp_name)
+    exp_dir = os.path.join(args.exp_dir, args.exp_name)
     if not os.path.exists(exp_dir):
         os.mkdir(exp_dir)
 
     logger = create_logger(os.path.join(exp_dir, 'log.txt'))
     logger.info(args)
 
-    data_dir = os.environ.get('TALKTHEWALK_DATADIR', './data')
+    data_dir = args.data_dir
 
     train_data = TalkTheWalkLanguage(data_dir, 'train')
     train_loader = DataLoader(train_data, args.batch_sz, shuffle=True, collate_fn=get_collate_fn(args.cuda))
 
     valid_data = TalkTheWalkLanguage(data_dir, 'valid')
-    valid_loader = DataLoader(train_data, args.batch_sz, collate_fn=get_collate_fn(args.cuda))
+    valid_loader = DataLoader(valid_data, args.batch_sz, collate_fn=get_collate_fn(args.cuda))
 
-    tourist = TouristLanguage(args.act_emb_sz, args.act_hid_sz, 6, args.obs_emb_sz, args.obs_hid_sz, len(train_data.map.landmark_dict) + 1,
+    tourist = TouristLanguage(args.act_emb_sz, args.act_hid_sz, len(train_data.act_dict), args.obs_emb_sz, args.obs_hid_sz, len(train_data.map.landmark_dict),
                               args.decoder_emb_sz, args.decoder_hid_sz, len(train_data.dict),
                               start_token=train_data.dict.tok2i[START_TOKEN], end_token=train_data.dict.tok2i[END_TOKEN])
 
@@ -328,8 +314,8 @@ if __name__ == '__main__':
         train_loss = eval_epoch(train_loader, tourist, opt=opt)
         valid_loss = eval_epoch(valid_loader, tourist)
 
-        logger.info('Train loss: {}, Valid_loss: {}'.format(train_loss, valid_loss))
-        # show_samples(test_data, tourist, text_dict, landmark_map, cuda=args.cuda, num_samples=5, logger=logger.info)
+        logger.info('Epoch: {} \t Train loss: {},\t Valid_loss: {}'.format(epoch, train_loss, valid_loss))
+        show_samples(valid_data, tourist, cuda=args.cuda, num_samples=5, logger=logger.info)
 
         if valid_loss < best_val:
             best_val = valid_loss

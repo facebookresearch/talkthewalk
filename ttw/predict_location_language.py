@@ -14,10 +14,10 @@ from ttw.modules import CBoW, MASC, NoMASC, ControlStep
 from ttw.utils import create_logger
 
 
-class Guide(nn.Module):
+class GuideLanguage(nn.Module):
 
     def __init__(self, inp_emb_sz, hidden_sz, num_tokens, apply_masc=True, T=1):
-        super(Guide, self).__init__()
+        super(GuideLanguage, self).__init__()
         self.hidden_sz = hidden_sz
         self.inp_emb_sz = inp_emb_sz
         self.num_tokens = num_tokens
@@ -146,26 +146,21 @@ def eval_epoch(loader, guide, opt=None):
             opt.step()
     return loss/total, accs/total
 
-def get_mean_T(guide, Xs, landmarks, ys, cuda=True, batch_sz=64):
+def get_mean_T(loader, guide):
     distribution = numpy.array([0.0] * 4)
-    for jj in range(0, len(Xs), batch_sz):
-        X_batch, mask, landmark_batch, y_batch = create_batch(Xs[jj:jj + batch_sz],
-                                                              landmarks[jj:jj + batch_sz],
-                                                              ys[jj:jj + batch_sz], cuda=cuda)
-        batch_sz = X_batch.size(0)
-
-        input_emb = guide.embed_fn(X_batch)
+    for batch in loader:
+        input_emb = guide.embed_fn(batch['utterance'])
         hidden_states, _ = guide.encoder_fn(input_emb)
 
-        last_state_indices = mask.sum(1).long() - 1
+        batch_sz = batch['utterance'].size(0)
+        last_state_indices = batch['utterance_mask'].sum(1).long() - 1
         last_hidden_states = hidden_states[torch.arange(batch_sz).long(), last_state_indices, :]
         T_dist = F.softmax(guide.T_prediction_fn(last_hidden_states))
 
         distribution += T_dist.sum(0).cpu().data.numpy()
-    distribution /= len(Xs)
+    distribution /= len(loader.dataset)
     mean_T = sum([p*v for p, v in zip(distribution, range(len(distribution)))])
     return mean_T
-
 
 
 if __name__ == '__main__':
@@ -201,7 +196,7 @@ if __name__ == '__main__':
     test_loader = DataLoader(test_data, args.batch_sz, collate_fn=get_collate_fn(args.cuda))
 
 
-    guide = Guide(args.embed_sz, args.hidden_sz, len(train_data.dict), apply_masc=args.apply_masc, T=args.T)
+    guide = GuideLanguage(args.embed_sz, args.hidden_sz, len(train_data.dict), apply_masc=args.apply_masc, T=args.T)
 
     if args.cuda:
         guide = guide.cuda()
@@ -225,7 +220,7 @@ if __name__ == '__main__':
     logger.info(best_val_acc*100)
     logger.info(best_test_acc*100)
 
-    # best_guide = Guide.load(os.path.join(exp_dir, 'guide.pt'))
-    # if args.cuda:
-    #     best_guide = best_guide.cuda()
-    # logger.info("mean T: {}".format(get_mean_T(best_guide, test_Xs, test_landmarks, test_ys)))
+    best_guide = GuideLanguage.load(os.path.join(exp_dir, 'guide.pt'))
+    if args.cuda:
+        best_guide = best_guide.cuda()
+    logger.info("mean T: {}".format(get_mean_T(test_loader, best_guide)))
