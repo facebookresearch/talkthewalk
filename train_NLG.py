@@ -3,6 +3,7 @@ import os
 import ujson as json
 import torch
 import math
+import copy
 import torch.optim as optim
 from collections import deque
 import time
@@ -114,9 +115,9 @@ class TrainLanguageGenerator(object):
         parser.add_argument('--rnn-type', type=str, default='LSTM')
         parser.add_argument('--use-prev-word', type='bool', default=True)
         parser.add_argument('--n-layers', type=int, default=1)
-        parser.add_argument('--learningrate', type=float, default=1.e-4)
-        parser.add_argument('--text_dict-file', type=str, default='text_dict.txt')
-        parser.add_argument('--min-word-freq', type=int, default=3)
+        parser.add_argument('--learningrate', type=float, default=.001)
+        parser.add_argument('--dict-file', type=str, default='dict.txt')
+        parser.add_argument('--min-word-freq', type=int, default=1)
         parser.add_argument('--temp-build', type='bool', default=False)
         parser.add_argument('--fill-padding-mask', type='bool', default=True)
         parser.add_argument('--min-sent-length', type=int, default=0)
@@ -146,13 +147,16 @@ class TrainLanguageGenerator(object):
         else:
             self.args = args
         args_file = args.model_file.replace('.best_valid', '') + '.args'
-        old_args = args
+        old_args = copy.deepcopy(args)
         if os.path.exists(args_file):
             print('Overriding args from {}'.format(args_file))
             args = self.override_args(args)
             self.args = args
-        self.beam_width = old_args.beam_width
-        self.beam_search = old_args.beam_search
+        self.args.beam_width = old_args.beam_width
+        self.args.beam_search = old_args.beam_search
+        self.args.sample_tokens = old_args.sample_tokens
+        self.beam_search = self.args.beam_search
+        self.beam_width = self.args.beam_width
         self.data_dir = args.data_dir
 
         self.num_epochs = args.num_epochs
@@ -224,7 +228,6 @@ class TrainLanguageGenerator(object):
                              vocab_trg=self.dictionary,
                              max_length=self.max_len)
 
-        # self.model = KVMemnn(args, self.dictionary)
         if self.use_cuda:
             self.model.cuda()
         self.optim = optim.Adam(filter(lambda p: p.requires_grad,
@@ -351,9 +354,9 @@ class TrainLanguageGenerator(object):
         return data
 
     def load_localization_data(self, dataset_name,
-                               orientation_aware=True, full_dialogue=False,
+                               orientation_aware=False, full_dialogue=False,
                                num_past_utterances=5, save_data=False,
-                               temp_build=True):
+                               temp_build=False):
         if dataset_name == 'train':
             dataset = self.train_set
         elif dataset_name == 'valid':
@@ -361,7 +364,7 @@ class TrainLanguageGenerator(object):
         else:
             dataset = self.test_set
         dataset_path = os.path.join(self.data_dir,
-                                    "{}_NLG_localize_data_mwf-{}_msl-{}_dict-{}_oa-{}_num_past_utt-{}_full_dialoge-{}_beam_search-{}_bs_width-{}/".format(
+                                    "{}_NLG_localize_data_mwf-{}_msl-{}_dict-{}_oa-{}_num_past_utt-{}_full_dialoge-{}_beam_search-{}_bs_width-{}_sample_toks-{}_mf-{}/".format(
                                      dataset_name,
                                      self.min_word_freq,
                                      self.min_sent_length,
@@ -370,7 +373,9 @@ class TrainLanguageGenerator(object):
                                      num_past_utterances,
                                      full_dialogue,
                                      self.beam_search,
-                                     self.beam_width
+                                     self.beam_width,
+                                     self.sample_tokens,
+                                     self.model_file
                                      ))
         if os.path.exists(dataset_path) and not temp_build:
             print('Localization data already built; loading {} split'.format(dataset_name))
@@ -418,8 +423,7 @@ class TrainLanguageGenerator(object):
                                     self.action_obs_dict.tok2i[END_TOKEN])
                             X = list(act_obs_memory)
                             data = self.create_batch([X], [y])
-                            X_batch, _, _, X_lengths, _, max_len = data
-                            # X_batch, _, X_lengths, _, max_len = data
+                            X_batch, _, _, X_lengths, _, max_len, _ = data
                             res = self.model.forward(src_var=X_batch,
                                                      src_lengths=X_lengths,
                                                      trg_var=None,
@@ -427,8 +431,9 @@ class TrainLanguageGenerator(object):
                                                      max_length=max_len,
                                                      return_attention=True)
                             pred = res['preds'][0, :].tolist()
-                            import pdb; pdb.set_trace()
-                            dialogue.append(self.dictionary.encode(self.dictionary.decode(pred), include_end=False))
+                            dialogue.append(self.dictionary.encode(
+                                                self.dictionary.decode(pred),
+                                                include_end=False))
                             utt = [y for x in dialogue[-num_past_utterances:] for y in x] + [self.dictionary[END_TOKEN]]
                             Xs.append(utt)
                             act_obs_memory.clear()
@@ -456,12 +461,11 @@ class TrainLanguageGenerator(object):
                                 act_obs_memory.append(obs_emb)
                 elif full_dialogue:
                     dialogue.append(self.dictionary.encode(msg['text'],
-                                              include_end=False))
-        if save_data:
-            f_name = 'Xs.json'
-            os.makedirs(dataset_path)
-            with open(os.path.join(dataset_path, f_name), 'w') as f:
-                json.dump(Xs, f)
+                                    include_end=False))
+        f_name = 'Xs.json'
+        os.makedirs(dataset_path)
+        with open(os.path.join(dataset_path, f_name), 'w') as f:
+            json.dump(Xs, f)
         if dataset_name == 'train':
             self.train_localization_Xs = Xs
         elif dataset_name == 'valid':
@@ -514,31 +518,33 @@ class TrainLanguageGenerator(object):
                 sorted_y_batch,
                 sorted_seq_lens,
                 sorted_y_lens,
-                max_y_len)
+                max_y_len,
+                sorted_indices)
 
-    def create_localization_batch(self, dataname, start_idx, batch_sz):
-        if dataname == 'train':
-            Xs = self.train_localization_Xs
-        elif dataname == 'valid':
-            Xs = self.valid_localization_Xs
-        else:
-            Xs = self.test_localization_Xs
+    def create_localization_batch(self, Xs, ys, start_idx, batch_sz):
+        data = self.create_batch(Xs[start_idx:start_idx + batch_sz],
+                                 ys[start_idx:start_idx + batch_sz])
 
-        seq_lens = [len(seq) for seq in Xs[start_idx: start_idx+batch_sz]]
-        max_X_len = max(seq_lens)
-        X_batch = torch.LongTensor(batch_sz, max_X_len).fill_(self.dictionary[PAD_TOKEN])
-        mask = torch.Tensor(X_batch.size()).fill_(0)
+        X_batch, mask, y_batch, X_lengths, y_lengths, max_len, indices = data
 
-        # X_batch = [[0 for _ in range(max_X_len)] for _ in range(batch_size)]
-        for i, seq in enumerate(Xs[start_idx: start_idx+batch_sz]):
-            for j, elem in enumerate(seq):
-                X_batch[i, j] = elem
-                if elem != self.dictionary[PAD_TOKEN]:
-                    mask[i, j] = 1.0
-        if self.use_cuda:
-            X_batch = X_batch.cuda()
-            mask = mask.cuda()
-        return X_batch, mask
+        res = self.model.forward(src_var=X_batch,
+                                 src_lengths=X_lengths,
+                                 trg_var=None,
+                                 trg_lengths=None,
+                                 max_length=max_len,
+                                 return_attention=True)
+        preds = res['preds']
+        new_preds = torch.LongTensor(preds.size())
+        new_preds = new_preds.cuda() if self.use_cuda else new_preds
+        mask = torch.FloatTensor(preds.size()).fill_(0)
+        mask = mask.cuda() if self.use_cuda else mask
+        i = 0
+        for idx in indices:
+            pred = preds[i]
+            new_preds[idx, :pred.size(0)] = pred
+            mask[idx, :pred.size(0)] = 1.0
+            i += 1
+        return new_preds, mask
 
     def train(self, num_epochs=None):
         print("Beginning Training...")
@@ -560,7 +566,7 @@ class TrainLanguageGenerator(object):
                 batch_num += 1
                 data = self.create_batch(Xs[jj:jj + self.bsz],
                                          ys[jj:jj + self.bsz])
-                X_batch, mask, y_batch, X_lengths, y_lengths, max_len = data
+                X_batch, mask, y_batch, X_lengths, y_lengths, max_len, _ = data
 
                 res = self.model.forward(src_var=X_batch,
                                          src_lengths=X_lengths,
@@ -648,7 +654,7 @@ class TrainLanguageGenerator(object):
             batch_num += 1
             data = self.create_batch(Xs[jj:jj + self.bsz],
                                      ys[jj:jj + self.bsz])
-            X_batch, mask, y_batch, X_lengths, y_lengths, max_len = data
+            X_batch, mask, y_batch, X_lengths, y_lengths, max_len, _ = data
             res = self.model.forward(src_var=X_batch,
                                      src_lengths=X_lengths,
                                      trg_var=y_batch,
@@ -669,7 +675,7 @@ class TrainLanguageGenerator(object):
             batch_num += 1
             data = self.create_batch(Xs[jj:jj + self.bsz],
                                      ys[jj:jj + self.bsz])
-            X_batch, mask, y_batch, X_lengths, y_lengths, max_len = data
+            X_batch, mask, y_batch, X_lengths, y_lengths, max_len, _ = data
             res = self.model.forward(src_var=X_batch,
                                      src_lengths=X_lengths,
                                      trg_var=y_batch,
@@ -697,7 +703,7 @@ class TrainLanguageGenerator(object):
         for jj in range(start, len(Xs), num_preds):
             data = self.create_batch(Xs[jj:jj + num_preds],
                                      ys[jj:jj + num_preds])
-            X_batch, mask, y_batch, X_lengths, y_lengths, max_d_len = data
+            X_batch, mask, y_batch, X_lengths, y_lengths, max_d_len, _ = data
             if max_len is None:
                 max_len = max_d_len
             res = self.model.forward(src_var=X_batch,
@@ -745,7 +751,7 @@ class TrainLanguageGenerator(object):
         Xs, ys = data
         data = self.create_batch(Xs[idx:idx + 1],
                                  ys[idx:idx + 1])
-        X_batch, mask, y_batch, X_lengths, y_lengths, max_len = data
+        X_batch, mask, y_batch, X_lengths, y_lengths, max_len, _ = data
         res = self.model.forward(src_var=X_batch,
                                  src_lengths=X_lengths,
                                  trg_var=None,
@@ -789,7 +795,6 @@ if __name__ == '__main__':
     trainer.predict('test', 20)
     # trainer.train()
     # trainer.test_predict()
-    # import pdb; pdb.set_trace()
 
     # trainer.eval_epoch()
     # trainer.eval_test()

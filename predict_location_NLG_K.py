@@ -28,7 +28,7 @@ def get_action(msg):
     msg_to_act = {'ACTION:TURNLEFT': 0, 'ACTION:TURNRIGHT': 1, 'ACTION:FORWARD': 2}
     return msg_to_act.get(msg, None)
 
-def load_data(dataset, landmark_map, dictionary, last_turns=1, min_sent_length=2):
+def load_data(dataset, landmark_map, dictionary, last_turns=1, min_sent_length=2, full_dialogue=False):
     Xs = list()
     landmarks = list()
     ys = list()
@@ -50,7 +50,7 @@ def load_data(dataset, landmark_map, dictionary, last_turns=1, min_sent_length=2
                     ls, y = landmark_map.get_landmarks_2d(config['neighborhood'], boundaries, loc)
                     landmarks.append(ls)
                     ys.append(y)
-            else:
+            elif full_dialogue:
                 dialogue.append(dictionary.encode(msg['text']))
 
     return Xs, landmarks, ys
@@ -174,13 +174,31 @@ class LocationPredictor(nn.Module):
         return loss, acc
 
 
-def eval_epoch(net, Xs, landmarks, ys, batch_sz, model_trainer, opt=None, use_cuda=False, dataname=None):
+def eval_epoch(net, Xs, landmarks, ys, batch_sz, opt=None, use_cuda=False, dataname=None):
     loss, accs, total = 0.0, 0.0, 0.0
 
     for jj in range(0, len(Xs), batch_sz):
         X_batch, mask, landmark_batch, y_batch = create_batch(Xs[jj:jj + batch_sz], landmarks[jj:jj + batch_sz],
                                               ys[jj:jj + batch_sz], cuda=use_cuda)
-        import pdb; pdb.set_trace()
+        l, acc = net.forward(X_batch, mask, landmark_batch, y_batch)
+        accs += acc
+        total += 1
+        loss += l.cpu().data.numpy()
+        print('Batch: {}, Total: {}, loss: {}'.format(jj/batch_sz, int(len(Xs)/batch_sz), loss))
+        if opt is not None:
+            opt.zero_grad()
+            l.backward()
+            opt.step()
+    return loss/total, accs/total
+
+
+def eval_epoch_gen_otf(net, Xs, landmarks, ys, batch_sz, model_Xs, model_ys, opt=None, use_cuda=False, dataname=None):
+    loss, accs, total = 0.0, 0.0, 0.0
+
+    for jj in range(0, len(Xs), batch_sz):
+        X_batch, mask, landmark_batch, y_batch = create_batch(Xs[jj:jj + batch_sz], landmarks[jj:jj + batch_sz],
+                                              ys[jj:jj + batch_sz], cuda=use_cuda)
+        X_batch, mask = model_trainer.create_localization_batch(model_Xs, model_ys, jj, batch_sz)
         l, acc = net.forward(X_batch, mask, landmark_batch, y_batch)
         accs += acc
         total += 1
@@ -232,7 +250,7 @@ if __name__ == '__main__':
     parser.add_argument('--learningrate', type=float, default=.001)
     parser.add_argument('--min-word-freq', type=int, default=1)
 
-    parser.add_argument('--text_dict-file', type=str, default='text_dict.txt')
+    parser.add_argument('--dict-file', type=str, default='dict.txt')
     parser.add_argument('--temp-build', type='bool', default=False)
     parser.add_argument('--fill-padding-mask', type='bool', default=True)
     parser.add_argument('--min-sent-length', type=int, default=0)
@@ -254,29 +272,26 @@ if __name__ == '__main__':
                         help='width of beam search')
     parser.add_argument('--use-actions', type='bool', default=True,
                         help='Whether to condition on actions')
+    parser.add_argument('--generate-language', type='bool', default=True,
+                        help='Whether to generate language')
+    parser.add_argument('--gen-on-fly', type='bool', default=False,
+                        help='Whether to generate language on the fly')
     parser.set_defaults(data_dir='data/')
 
 
     args = parser.parse_args()
-    model_trainer = TrainLanguageGenerator(args)
-    model_trainer.load_model(args.model_file)
-    args = model_trainer.args
-    # for dataset_name in ['train', 'valid', 'test']:
-    for dataset_name in ['train', 'valid', 'test']:
-        model_trainer.load_localization_data(dataset_name,
-                                             orientation_aware=False,
-                                             full_dialogue=args.full_dialogue,
-                                             num_past_utterances=args.num_past_utterances)
+    if args.generate_language:
+        model_trainer = TrainLanguageGenerator(args)
+        model_trainer.load_model(args.model_file)
+        args = model_trainer.args
+    else:
+        model_trainer = None
 
-    exp_name = args.model_file + '_experiment' + str(time.time())
+    exp_name = args.model_file + '_' + args.exp_name + '_experiment' + str(time.time())
     exp_dir = os.path.join('experiment', exp_name)
     if os.path.exists(exp_dir):
         raise RuntimeError('Experiment directory {} already exist..'.format(exp_dir))
-    os.mkdir(exp_dir)
     #
-    logger = create_logger(os.path.join(exp_dir, 'log.txt'))
-    logger.info(args)
-
     # data_dir = os.environ.get('TALKTHEWALK_DATADIR', './data')
     data_dir = './data'
 
@@ -284,7 +299,7 @@ if __name__ == '__main__':
     valid_set = json.load(open(os.path.join(data_dir, 'talkthewalk.valid.json')))
     test_set = json.load(open(os.path.join(data_dir, 'talkthewalk.test.json')))
 
-    dictionary = Dictionary('./data/{}'.format(args.dict_file), 1)
+    dictionary = Dictionary('./data/{}'.format(args.dict_file), args.min_word_freq)
 
     neighborhoods = ['fidi', 'hellskitchen', 'williamsburg', 'uppereast', 'eastvillage']
     landmark_map = Landmarks(neighborhoods, include_empty_corners=True)
@@ -292,15 +307,26 @@ if __name__ == '__main__':
     train_Xs, train_landmarks, train_ys = load_data(train_set, landmark_map, dictionary, min_sent_length=args.min_sent_length, last_turns=args.num_past_utterances)
     valid_Xs, valid_landmarks, valid_ys = load_data(valid_set, landmark_map, dictionary, min_sent_length=args.min_sent_length, last_turns=args.num_past_utterances)
     test_Xs, test_landmarks, test_ys = load_data(test_set, landmark_map, dictionary, min_sent_length=args.min_sent_length, last_turns=args.num_past_utterances)
-    train_gen_Xs = model_trainer.train_localization_Xs
-    valid_gen_Xs = model_trainer.valid_localization_Xs
-    test_gen_Xs = model_trainer.test_localization_Xs
-    print('len of model_trainer x: {}'.format(len(model_trainer.train_localization_Xs)))
-    print('len of train_xs x: {}'.format(len(train_Xs)))
-    print('len of model_trainer valid x: {}'.format(len(model_trainer.valid_localization_Xs)))
-    print('len of valid_xs x: {}'.format(len(valid_Xs)))
-    print('len of model_trainer test x: {}'.format(len(model_trainer.test_localization_Xs)))
-    print('len of test_xs x: {}'.format(len(test_Xs)))
+    if args.generate_language and not args.gen_on_fly:
+        for dataset_name in ['train', 'valid', 'test']:
+            model_trainer.load_localization_data(dataset_name,
+                                                 orientation_aware=False,
+                                                 full_dialogue=args.full_dialogue,
+                                                 num_past_utterances=args.num_past_utterances)
+        train_gen_Xs = model_trainer.train_localization_Xs
+        valid_gen_Xs = model_trainer.valid_localization_Xs
+        test_gen_Xs = model_trainer.test_localization_Xs
+
+    os.mkdir(exp_dir)
+    logger = create_logger(os.path.join(exp_dir, 'log.txt'))
+    logger.info(args)
+    logger.info('len of train_xs x: {}'.format(len(train_Xs)))
+    logger.info('len of valid_xs x: {}'.format(len(valid_Xs)))
+    logger.info('len of test_xs x: {}'.format(len(test_Xs)))
+    if args.generate_language and not args.gen_on_fly:
+        logger.info('len of model_trainer x: {}'.format(len(model_trainer.train_localization_Xs)))
+        logger.info('len of model_trainer valid x: {}'.format(len(model_trainer.valid_localization_Xs)))
+        logger.info('len of model_trainer test x: {}'.format(len(model_trainer.test_localization_Xs)))
     batch_sz = args.batch_sz
     hid_sz = 256
     emb_sz = 128
@@ -315,13 +341,28 @@ if __name__ == '__main__':
     opt = optim.Adam(net.parameters())
 
     best_train_acc, best_val_acc, best_test_acc = 0.0, 0.0, 0.0
-    for i in range(100):
-        print('EPOCH NUMBER {}'.format(i))
-        train_gen_Xs, train_landmarks, train_ys = shuffle(train_gen_Xs, train_landmarks, train_ys)
-        train_loss, train_acc = eval_epoch(net, train_gen_Xs, train_landmarks, train_ys, batch_sz, model_trainer, dataname='train', opt=opt, use_cuda=use_cuda)
-        valid_loss, valid_acc = eval_epoch(net, valid_gen_Xs, valid_landmarks, valid_ys, batch_sz, model_trainer, dataname='valid', use_cuda=use_cuda)
-        test_loss, test_acc = eval_epoch(net, test_gen_Xs, test_landmarks, test_ys, batch_sz, model_trainer, dataname='test', use_cuda=use_cuda)
-
+    train_Xs = train_gen_Xs if args.generate_language and not args.gen_on_fly else train_Xs
+    test_Xs = test_gen_Xs if args.generate_language and not args.gen_on_fly else test_Xs
+    valid_Xs = valid_gen_Xs if args.generate_language and not args.gen_on_fly else valid_Xs
+    if model_trainer and args.gen_on_fly:
+        model_train_Xs, model_train_ys = model_trainer.train_data
+        model_valid_Xs, model_valid_ys = model_trainer.valid_data
+        model_test_Xs, model_test_ys = model_trainer.test_data
+        logger.info('len of model_trainer x: {}'.format(len(model_train_Xs)))
+        logger.info('len of model_trainer valid x: {}'.format(len(model_valid_Xs)))
+        logger.info('len of model_trainer test x: {}'.format(len(model_test_Xs)))
+    for i in range(20):
+        logger.info('EPOCH NUMBER {}'.format(i))
+        if args.gen_on_fly:
+            train_Xs, model_train_Xs, model_train_ys, train_landmarks, train_ys = shuffle(train_Xs, model_train_Xs, model_train_ys, train_landmarks, train_ys)
+            train_loss, train_acc = eval_epoch_gen_otf(net, train_Xs, train_landmarks, train_ys, batch_sz, model_train_Xs, model_train_ys, dataname='train', opt=opt, use_cuda=use_cuda)
+            valid_loss, valid_acc = eval_epoch_gen_otf(net, valid_Xs, valid_landmarks, valid_ys, batch_sz, model_valid_Xs, model_valid_ys, dataname='valid', use_cuda=use_cuda)
+            test_loss, test_acc = eval_epoch_gen_otf(net, test_Xs, test_landmarks, test_ys, batch_sz, model_test_Xs, model_test_ys, dataname='test', use_cuda=use_cuda)
+        else:
+            train_Xs, train_landmarks, train_ys = shuffle(train_Xs, train_landmarks, train_ys)
+            train_loss, train_acc = eval_epoch(net, train_Xs, train_landmarks, train_ys, batch_sz, dataname='train', opt=opt, use_cuda=use_cuda)
+            valid_loss, valid_acc = eval_epoch(net, valid_Xs, valid_landmarks, valid_ys, batch_sz, dataname='valid', use_cuda=use_cuda)
+            test_loss, test_acc = eval_epoch(net, test_Xs, test_landmarks, test_ys, batch_sz, dataname='test', use_cuda=use_cuda)
         logger.info("Train loss: %.2f, Valid loss: %.2f, Test loss: %.2f" % (train_loss, valid_loss, test_loss))
         logger.info("Train acc: %.2f, Valid acc: %.2f, Test acc: %.2f" % (train_acc*100, valid_acc*100, test_acc*100))
         print("Train loss: %.2f, Valid loss: %.2f, Test loss: %.2f" % (train_loss, valid_loss, test_loss))
