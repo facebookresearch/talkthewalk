@@ -4,24 +4,26 @@ of the paper ```Talk The Walk: Navigating New York City Through Grounded Dialogu
 
 ## Getting started
 
-### Setup
+### (1) Setup the environment
 
 
-### Downloading data
+### (2) Download the data
 To download the dataset, run the following command
 ```bash
 sh scripts/download.sh DATA_DIR
 ```
 where DATA_DIR is the path
 
-### Running emergent language experiments
+### (3) Run experiments
+
+#### Running emergent language experiments
 sh scripts/train_
 
-### Running natural language experiments
+#### Running natural language experiments
 
 
-### Evaluating on full task
+#### Evaluating on full task
 
-### Running landmark classification experiments
+#### Running landmark classification experiments
 
 
