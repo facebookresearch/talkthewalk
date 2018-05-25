@@ -13,7 +13,7 @@ from torch.autograd import Variable
 
 plt.switch_backend('agg')
 
-from data_loader import Map, create_obs_dict, load_features, ResnetFeatures, FasttextFeatures, TextrecogFeatures, to_variable
+from ttw.data_loader import Map, create_obs_dict, load_features, ResnetFeatures, FasttextFeatures, TextrecogFeatures, to_variable
 from ttw.utils import create_logger
 
 neighborhoods = ['fidi', 'uppereast', 'eastvillage', 'williamsburg', 'hellskitchen']

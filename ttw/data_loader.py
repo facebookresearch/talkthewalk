@@ -4,6 +4,7 @@ import itertools
 import json
 import numpy
 import torch
+import torch.nn.functional as F
 
 from torch.autograd import Variable
 from sklearn.decomposition import PCA
@@ -12,7 +13,7 @@ from ttw.dict import Dictionary, START_TOKEN, END_TOKEN
 
 
 class TalkTheWalkEmergent(object):
-    """Loading dataset for emergent language experiments"""
+    """Dataset loading for emergent language experiments"""
 
     neighborhoods = ['hellskitchen', 'williamsburg', 'eastvillage', 'fidi', 'uppereast']
 
@@ -81,7 +82,7 @@ class TalkTheWalkEmergent(object):
 
 
 class TalkTheWalkLanguage(object):
-    """Loading dataset for natural language experiments"""
+    """Dataset loading for natural language experiments"""
 
     neighborhoods = ['hellskitchen', 'williamsburg', 'eastvillage', 'fidi', 'uppereast']
 

@@ -1,22 +1,10 @@
-import os
-import json
-import argparse
-import random
-import numpy
 import torch
 import torch.nn as nn
-import torch.optim as optim
 import torch.nn.functional as F
 
-from torch.utils.data.dataloader import DataLoader
 from torch.autograd import Variable
-
-from ttw.data_loader import TalkTheWalkLanguage, get_collate_fn
-from ttw.modules import CBoW
-from ttw.dict import START_TOKEN, END_TOKEN
-from ttw.utils import create_logger
-from ttw.beam_search import SequenceGenerator
-
+from ttw.models.beam_search import SequenceGenerator
+from ttw.models.modules import GRUEncoder
 
 class TouristLanguage(nn.Module):
 
@@ -35,13 +23,8 @@ class TouristLanguage(nn.Module):
         self.decoder_hid_sz = decoder_hid_sz
         self.num_words = num_words
 
-        self.act_emb_fn = nn.Embedding(num_actions, act_emb_sz)
-        self.act_encoder = nn.GRU(act_emb_sz, act_hid_sz, batch_first=True)
-        self.act_hidden = nn.Parameter(torch.FloatTensor(1, act_hid_sz).normal_(0.0, 0.1))
-
-        self.obs_emb_fn = CBoW(num_observations, obs_emb_sz, init_std=0.1)
-        self.obs_encoder = nn.GRU(obs_emb_sz, obs_hid_sz, batch_first=True)
-        self.obs_hidden = nn.Parameter(torch.FloatTensor(1, obs_hid_sz).normal_(0.0, 0.1))
+        self.act_encoder = GRUEncoder(act_emb_sz, act_hid_sz, num_actions)
+        self.obs_encoder = GRUEncoder(obs_emb_sz, obs_hid_sz, num_observations, cbow=True)
 
         self.emb_fn = nn.Embedding(num_words, decoder_emb_sz)
         self.emb_fn.weight.data.normal_(0.0, 0.1)
@@ -54,18 +37,10 @@ class TouristLanguage(nn.Module):
         self.start_token = start_token
         self.end_token = end_token
 
-    def pick_hidden_state(self, states, seq_lens):
-        batch_size = seq_lens.size(0)
-        return states[torch.arange(batch_size).long(), seq_lens - 1, :]
 
     def encode(self, observations, obs_seq_len, actions, act_seq_len):
-        obs_inp_emb = self.obs_emb_fn(observations)
-        obs_h, _ = self.obs_encoder(obs_inp_emb)
-        observation_emb = self.pick_hidden_state(obs_h, obs_seq_len)
-
-        act_inp_emb = self.act_emb_fn(actions)
-        action_embs, _ = self.act_encoder(act_inp_emb)
-        action_emb = self.pick_hidden_state(action_embs, act_seq_len)
+        observation_emb = self.obs_encoder(observations, obs_seq_len)
+        action_emb = self.act_encoder(actions, act_seq_len)
 
         context_emb = torch.cat([observation_emb, action_emb], 1)
         context_emb = self.context_linear.forward(context_emb)
@@ -145,22 +120,24 @@ class TouristLanguage(nn.Module):
                     input_ind = samples.squeeze()
 
                 out = {}
-                out['preds'] = torch.cat(preds, 1)
-                out['mask'] = mask
+                out['utterance'] = torch.cat(preds, 1)
+                out['utterance_mask'] = mask
                 out['probs'] = torch.cat(probs, 1)
             elif decoding_strategy == 'beam_search':
                 def _step_fn(input, hidden, context, k=4):
                     input = Variable(torch.LongTensor(input)).squeeze().cuda()
                     hidden = Variable(torch.FloatTensor(hidden)).unsqueeze(0).cuda()
                     context = Variable(torch.FloatTensor(context)).unsqueeze(1).cuda()
+
                     prob, hs = self.step(input, hidden, context)
+
                     logprobs = torch.log(prob)
                     logprobs, words = logprobs.topk(k, 1)
                     hs = hs.squeeze().cpu().data.numpy()
 
                     return words, logprobs, hs
 
-                seq_gen = SequenceGenerator(_step_fn, self.end_token, max_sequence_length=max_sample_length, beam_size=10, length_normalization_factor=0.8)
+                seq_gen = SequenceGenerator(_step_fn, self.end_token, max_sequence_length=max_sample_length, beam_size=10, length_normalization_factor=1.1)
                 start_tokens = [[self.start_token] for _ in range(batch_size)]
                 hidden = [[0.0]*self.decoder_hid_sz]*batch_size
                 beam_out = seq_gen.beam_search(start_tokens, hidden, context_emb.cpu().data.numpy())
@@ -172,12 +149,12 @@ class TouristLanguage(nn.Module):
                     mask_tensor[i, :(len(seq.output)-1)] = 1.0
 
                 out = {}
-                out['preds'] = Variable(pred_tensor)
-                out['mask'] = Variable(mask_tensor)
+                out['utterance'] = Variable(pred_tensor)
+                out['utterance_mask'] = Variable(mask_tensor)
 
                 if batch['observations'].is_cuda:
-                    out['preds'] = out['preds'].cuda()
-                    out['mask'] = out['mask'].cuda()
+                    out['utterance'] = out['utterance'].cuda()
+                    out['utterance_mask'] = out['utterance_mask'].cuda()
 
         return out
 
@@ -219,110 +196,118 @@ class TouristLanguage(nn.Module):
         return tourist
 
 
-def show_samples(dataset, tourist, num_samples=10, cuda=True, logger=None, decoding_strategy='sample', indices=None):
-    if indices is None:
-        indices = list()
-        for _ in range(num_samples):
-            indices.append(random.randint(0, len(dataset)-1))
+class GuideLanguage(nn.Module):
 
-    collate_fn = get_collate_fn(cuda)
+    def __init__(self, inp_emb_sz, hidden_sz, num_tokens, apply_masc=True, T=1):
+        super(GuideLanguage, self).__init__()
+        self.hidden_sz = hidden_sz
+        self.inp_emb_sz = inp_emb_sz
+        self.num_tokens = num_tokens
+        self.apply_masc = apply_masc
+        self.T = T
 
-    data = [dataset[ind] for ind in indices]
-    batch = collate_fn(data)
+        self.embed_fn = nn.Embedding(num_tokens, inp_emb_sz, padding_idx=0)
+        self.encoder_fn = nn.LSTM(inp_emb_sz, hidden_sz//2, batch_first=True, bidirectional=True)
+        self.cbow_fn = CBoW(11, hidden_sz)
 
-    out = tourist.forward(batch,
-                          decoding_strategy=decoding_strategy, train=False)
+        self.T_prediction_fn = nn.Linear(hidden_sz, T+1)
 
-    preds = out['preds'].cpu().data
-    logger_fn = print
-    if logger:
-        logger_fn = logger
+        self.feat_control_emb = nn.Parameter(torch.FloatTensor(hidden_sz).normal_(0.0, 0.1))
+        self.feat_control_step_fn = ControlStep(hidden_sz)
 
-    for i in range(len(indices)):
-        o = ''
-        for obs in data[i]['observations']:
-            o += '(' + ','.join([dataset.map.landmark_dict.decode(o_ind) for o_ind in obs]) + ') ,'
-        # a = ', '.join([i2act[a_ind] for a_ind in actions[i]])
-        a = ','.join([dataset.act_dict.decode_agnostic(a_ind) for a_ind in data[i]['actions']])
+        if apply_masc:
+            self.act_control_emb = nn.Parameter(torch.FloatTensor(hidden_sz).normal_(0.0, 0.1))
+            self.act_control_step_fn = ControlStep(hidden_sz)
+            self.action_linear_fn = nn.Linear(hidden_sz, 9)
 
-        logger_fn('Observations: ' + o)
-        logger_fn('Actions: ' + a)
-        logger_fn('GT: ' + dataset.dict.decode(batch['utterance'][i, 1:]))
-        logger_fn('Sample: ' + dataset.dict.decode(preds[i, :]))
-        logger_fn('-'*80)
+        self.landmark_write_gate = nn.ParameterList()
+        self.obs_write_gate = nn.ParameterList()
+        for _ in range(T + 1):
+            self.landmark_write_gate.append(nn.Parameter(torch.FloatTensor(1, hidden_sz, 1, 1).normal_(0, 0.1)))
+            self.obs_write_gate.append(nn.Parameter(torch.FloatTensor(1, hidden_sz).normal_(0.0, 0.1)))
 
-def eval_epoch(loader, tourist, opt=None):
-    total_loss, total_examples = 0.0, 0.0
-    for batch in loader:
-        out = tourist.forward(batch,
-                              train=True)
-        loss = out['loss']
-        total_loss += float(loss.data)
-        total_examples += batch['utterance'].size(0)
+        if apply_masc:
+            self.masc_fn = MASC(self.hidden_sz)
+        else:
+            self.masc_fn = NoMASC(self.hidden_sz)
 
-        if opt is not None:
-            opt.zero_grad()
-            loss.backward()
-            opt.step()
-    return total_loss/total_examples
+        self.loss = nn.CrossEntropyLoss()
 
+    def forward(self, batch, add_rl_loss=False):
+        batch_size = batch['utterance'].size(0)
+        input_emb = self.embed_fn(batch['utterance'])
+        hidden_states, _ = self.encoder_fn(input_emb)
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--cuda', action='store_true')
-    parser.add_argument('--data-dir', type=str, default='./data')
-    parser.add_argument('--exp-dir', type=str, default='./exp')
-    parser.add_argument('--act-emb-sz', type=int, default=32)
-    parser.add_argument('--act-hid-sz', type=int, default=128)
-    parser.add_argument('--obs-emb-sz', type=int, default=32)
-    parser.add_argument('--obs-hid-sz', type=int, default=128)
-    parser.add_argument('--decoder-emb-sz', type=int, default=128)
-    parser.add_argument('--decoder-hid-sz', type=int, default=512)
-    parser.add_argument('--batch-sz', type=int, default=128)
-    parser.add_argument('--num-epochs', type=int, default=100)
-    parser.add_argument('--exp-name', type=str, default='tourist_sl')
+        last_state_indices = batch['utterance_mask'].sum(1).long() - 1
 
-    args = parser.parse_args()
+        last_hidden_states = hidden_states[torch.arange(batch_size).long(), last_state_indices, :]
+        T_dist = F.softmax(self.T_prediction_fn(last_hidden_states))
+        sampled_Ts = T_dist.multinomial(1).squeeze()
 
-    exp_dir = os.path.join(args.exp_dir, args.exp_name)
-    if not os.path.exists(exp_dir):
-        os.mkdir(exp_dir)
+        obs_msgs = list()
+        feat_controller = self.feat_control_emb.unsqueeze(0).repeat(batch_size, 1)
+        for step in range(self.T + 1):
+            extracted_msg, feat_controller = self.feat_control_step_fn(hidden_states, batch['utterance_mask'], feat_controller)
+            obs_msgs.append(extracted_msg)
 
-    logger = create_logger(os.path.join(exp_dir, 'log.txt'))
-    logger.info(args)
-
-    data_dir = args.data_dir
-
-    train_data = TalkTheWalkLanguage(data_dir, 'train')
-    train_loader = DataLoader(train_data, args.batch_sz, shuffle=True, collate_fn=get_collate_fn(args.cuda))
-
-    valid_data = TalkTheWalkLanguage(data_dir, 'valid')
-    valid_loader = DataLoader(valid_data, args.batch_sz, collate_fn=get_collate_fn(args.cuda))
-
-    tourist = TouristLanguage(args.act_emb_sz, args.act_hid_sz, len(train_data.act_dict), args.obs_emb_sz, args.obs_hid_sz, len(train_data.map.landmark_dict),
-                              args.decoder_emb_sz, args.decoder_hid_sz, len(train_data.dict),
-                              start_token=train_data.dict.tok2i[START_TOKEN], end_token=train_data.dict.tok2i[END_TOKEN])
-
-    opt = optim.Adam(tourist.parameters())
-
-    if args.cuda:
-        tourist = tourist.cuda()
-
-    best_val = 1e10
-
-    for epoch in range(1, args.num_epochs):
-        train_loss = eval_epoch(train_loader, tourist, opt=opt)
-        valid_loss = eval_epoch(valid_loader, tourist)
-
-        logger.info('Epoch: {} \t Train loss: {},\t Valid_loss: {}'.format(epoch, train_loss, valid_loss))
-        show_samples(valid_data, tourist, cuda=args.cuda, num_samples=5, logger=logger.info)
-
-        if valid_loss < best_val:
-            best_val = valid_loss
-            tourist.save(os.path.join(exp_dir, 'tourist.pt'))
+        tourist_obs_msg = []
+        for i, (gate, emb) in enumerate(zip(self.obs_write_gate, obs_msgs)):
+            include = (i < sampled_Ts).float().unsqueeze(-1)
+            tourist_obs_msg.append(include*F.sigmoid(gate)*emb)
+        tourist_obs_msg = sum(tourist_obs_msg)
 
 
+        landmark_emb = self.cbow_fn(batch['landmarks']).permute(0, 3, 1, 2)
+        landmark_embs = [landmark_emb]
 
+        if self.apply_masc:
+            act_controller = self.act_control_emb.unsqueeze(0).repeat(batch_size, 1)
+            for step in range(self.T):
+                extracted_msg, act_controller = self.act_control_step_fn(hidden_states, batch['utterance_mask'], act_controller)
+                action_out = self.action_linear_fn(extracted_msg)
+                out = self.masc_fn.forward(landmark_embs[-1], action_out, current_step=step, Ts=sampled_Ts)
+                landmark_embs.append(out)
+        else:
+            for step in range(self.T):
+                landmark_embs.append(self.masc_fn.forward(landmark_embs[-1]))
 
+        landmarks = sum([F.sigmoid(gate)*emb for gate, emb in zip(self.landmark_write_gate, landmark_embs)])
 
+        landmarks = landmarks.resize(batch_size, landmarks.size(1), 16).transpose(1, 2)
 
+        logits = torch.bmm(landmarks, tourist_obs_msg.unsqueeze(-1)).squeeze(-1)
+        prob = F.softmax(logits, dim=1)
+        y_true = (batch['target'][:, 0] * 4 + batch['target'][:, 1]).squeeze()
+
+        sl_loss = -torch.log(torch.gather(prob, 1, y_true.unsqueeze(-1)) + 1e-8)
+
+        # add RL loss
+        loss = sl_loss
+        if add_rl_loss:
+            reward = -(sl_loss - sl_loss.mean())
+
+            log_prob = torch.log(torch.gather(T_dist, 1, sampled_Ts.unsqueeze(-1)) + 1e-8)
+            rl_loss = (log_prob*reward)
+            loss = loss - rl_loss
+
+        acc = sum([1.0 for pred, target in zip(prob.max(1)[1].data.cpu().numpy(), y_true.data.cpu().numpy()) if
+                   pred == target]) / batch_size
+        return loss, acc
+
+    def save(self, path):
+        state = dict()
+        state['hidden_sz'] = self.hidden_sz
+        state['embed_sz'] = self.inp_emb_sz
+        state['num_tokens'] = self.num_tokens
+        state['apply_masc'] = self.apply_masc
+        state['T'] = self.T
+        state['parameters'] = self.state_dict()
+        torch.save(state, path)
+
+    @classmethod
+    def load(cls, path):
+        state = torch.load(path)
+        guide = cls(state['embed_sz'], state['hidden_sz'], state['num_tokens'],
+                    T=state['T'], apply_masc=state['apply_masc'])
+        guide.load_state_dict(state['parameters'])
+        return guide

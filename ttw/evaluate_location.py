@@ -1,18 +1,15 @@
 import argparse
-import os
-import json
-import random
-import torch
 import copy
+import json
+import os
+import random
 import time
+
 import numpy
-
-from data_loader import create_obs_dict, Map, load_features, FasttextFeatures, GoldstandardFeatures, ResnetFeatures, step_aware
-from predict_location_continuous import create_batch, LocationPredictor
-from predict_location_discrete import TouristDiscrete, GuideDiscrete
+import torch
 
 
-landmarks = {}
+
 
 def get_landmarks(neighborhood, boundaries):
     if neighborhood not in landmarks:
@@ -128,6 +125,7 @@ def evaluate(configs, predict_location_fn, landmark_map, feature_loaders, random
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
+    parser.add_argument('--data-dir', type=str, default='./data')
     parser.add_argument('--cuda', action='store_true')
     parser.add_argument('--resnet-features', action='store_true')
     parser.add_argument('--fasttext-features', action='store_true')

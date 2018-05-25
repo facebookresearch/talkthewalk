@@ -18,7 +18,7 @@ class CBoW(nn.Module):
     def forward(self, x):
         in_shape = x.size()
         num_elem = reduce(operator.mul, in_shape)
-        flat_x = x.view(num_elem)
+        flat_x = x.contiguous().view(num_elem)
         flat_emb = self.emb_fn.forward(flat_x)
         emb = flat_emb.view(*(in_shape+(self.emb_size,)))
         return emb.sum(dim=-2)
@@ -62,22 +62,6 @@ class NoMASC(MASC):
         weight = self.conv_weight * mask
         return F.conv2d(input, weight, padding=1)
 
-# class PredictConvWeight(nn.Module):
-#
-#     def __init__(self, hidden_sz):
-#         super(PredictConvWeight, self).__init__()
-#         self.hidden_sz = hidden_sz
-#
-#     def forward(self, inp, action_out, current_step=None, Ts=None):
-#         batch_size = inp.size(0)
-#         out = inp.clone().zero_()
-#
-#         for i in range(batch_size):
-#             if Ts is None or current_step < Ts[i]:
-#                 selected_inp = inp[i, :, :, :].unsqueeze(0)
-#                 weight = action_out[i, :].view(self.hidden_sz, self.hidden_sz, 3, 3)/100.0
-#                 out[i, :, :, :] = F.conv2d(selected_inp, weight, padding=1).squeeze(0)
-#         return out
 
 class ControlStep(nn.Module):
 
@@ -102,5 +86,36 @@ class AttentionHop(nn.Module):
         extracted_msg = torch.bmm(att_score.unsqueeze(1), inp_seq).squeeze()
         return extracted_msg
 
+class GRUEncoder(nn.Module):
 
+    def __init__(self, emb_sz, hid_sz, num_emb, cbow=False):
+        super(GRUEncoder, self).__init__()
+        self.emb_sz = emb_sz
+        self.hid_sz = hid_sz
+        self.num_emb = num_emb
+        self.cbow = cbow
+
+        if cbow:
+            self.emb_fn = CBoW(num_emb, emb_sz, init_std=0.1, padding_idx=0)
+        else:
+            self.emb_fn = nn.Embedding(num_emb, emb_sz, padding_idx=0)
+
+        self.encoder = nn.GRU(emb_sz, hid_sz, batch_first=True)
+
+    def forward(self, inp, seq_len):
+        inp_emb = self.emb_fn(inp)
+        states, _ = self.encoder(inp_emb)
+
+        return self.get_last_state(states, seq_len)
+
+    def get_last_state(self, states, seq_lens):
+        batch_size = seq_lens.size(0)
+        # append zero vector as first hidden state
+        first_h = Variable(torch.FloatTensor(batch_size, 1, states.size(2)).zero_())
+        if states.is_cuda:
+            first_h = first_h.cuda()
+        states = torch.cat([first_h, states], 1)
+
+
+        return states[torch.arange(batch_size).long(), seq_lens, :]
 

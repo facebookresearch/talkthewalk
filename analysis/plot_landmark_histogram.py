@@ -3,8 +3,8 @@ import os
 import matplotlib.pyplot as plt
 import numpy
 
-from ttw.classify_landmarks import load_data
 from ttw.data_loader import ResnetFeatures, Map
+from ttw.train.classify_landmarks import load_data
 
 plt.switch_backend('agg')
 plt.style.use('ggplot')
