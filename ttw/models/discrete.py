@@ -64,7 +64,7 @@ class TouristDiscrete(nn.Module):
             act_msg = act_prob.bernoulli().detach()
 
             out['probs'].append(act_prob)
-            comms['comms'].append(act_msg)
+            out['comms'].append(act_msg)
 
         if self.apply_masc:
             embeddings = torch.cat([feat_embeddings, act_embeddings], 1).resize(batch_size, 2 * self.vocab_sz)
