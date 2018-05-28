@@ -9,19 +9,28 @@ from ttw.data_loader import TalkTheWalkLanguage, get_collate_fn
 from ttw.models import GuideLanguage, TouristLanguage
 from ttw.utils import create_logger
 
-def cache():
-    raise NotImplementedError()
+def cache(dataset, tourist, collate_fn, decoding_strategy='greedy'):
+    print("Caching tourist utterances...")
+    loader = DataLoader(dataset, batch_size=128, collate_fn=collate_fn, shuffle=False)
+    index = 0
+    for batch in loader:
+        t_out = tourist.forward(batch, train=False, decoding_strategy=decoding_strategy)
+        for i in range(t_out['utterance'].size(0)):
+            utt_len = int(t_out['utterance_mask'][i, :].sum().item())
+            dataset.data['utterance'][index+i] = t_out['utterance'][i, :utt_len].cpu().data.numpy().tolist()
+        index += t_out['utterance'].size(0)
 
-def epoch(loader, tourist, guide, g_opt=None, t_opt=None, cached=True,
-          decoding_strategy='beam_search'):
+
+def epoch(loader, tourist, guide, g_opt=None, t_opt=None,
+          decoding_strategy='beam_search', on_the_fly=False):
     accuracy, total = 0.0, 0.0
 
     for batch in loader:
-
-        out = tourist.forward(batch,
+        if on_the_fly:
+            out = tourist.forward(batch,
                               decoding_strategy=decoding_strategy, train=False)
-        batch['utterance'] = out['preds']
-        batch['utterance_mask'] = out['mask']
+            batch['utterance'] = out['utterance']
+            batch['utterance_mask'] = out['utterance_mask']
 
         loss, acc = guide.forward(batch)
 
@@ -73,7 +82,7 @@ if __name__ == '__main__':
     parser.add_argument('--train-guide', action='store_true')
     parser.add_argument('--train-tourist', action='store_true')
     parser.add_argument('--exp-name', default='test')
-    parser.add_argument('--decoding-strategy', type=str)
+    parser.add_argument('--decoding-strategy', type=str, default='greedy')
 
     args = parser.parse_args()
 
@@ -115,7 +124,9 @@ if __name__ == '__main__':
 
 
     if not args.on_the_fly:
-        raise NotImplementedError()
+        cache(train_data, tourist, get_collate_fn(args.cuda), decoding_strategy=args.decoding_strategy)
+        cache(valid_data, tourist, get_collate_fn(args.cuda), decoding_strategy=args.decoding_strategy)
+        cache(test_data, tourist, get_collate_fn(args.cuda), decoding_strategy=args.decoding_strategy)
 
     best_train_acc, best_valid_acc, best_test_acc = 0.0, 0.0, 0.0
     for i in range(args.num_epochs):
@@ -128,9 +139,9 @@ if __name__ == '__main__':
             t_optim = t_opt
 
         train_acc = epoch(train_loader, tourist, guide, g_opt=g_optim, t_opt=t_optim,
-                          decoding_strategy=args.decoding_strategy)
-        valid_acc = epoch(valid_loader, tourist, guide, decoding_strategy=args.decoding_strategy)
-        test_acc = epoch(test_loader, tourist, guide, decoding_strategy=args.decoding_strategy)
+                          decoding_strategy=args.decoding_strategy, on_the_fly=args.on_the_fly)
+        valid_acc = epoch(valid_loader, tourist, guide, decoding_strategy=args.decoding_strategy, on_the_fly=args.on_the_fly)
+        test_acc = epoch(test_loader, tourist, guide, decoding_strategy=args.decoding_strategy, on_the_fly=args.on_the_fly)
 
         logger.info(
             'Epoch: {} -- Train acc: {}, Valid acc: {}, Test acc: {}'.format(i + 1, train_acc * 100, valid_acc * 100,

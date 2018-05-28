@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 from torch.autograd import Variable
 from ttw.models.beam_search import SequenceGenerator
-from ttw.models.modules import GRUEncoder
+from ttw.models.modules import GRUEncoder, CBoW, ControlStep, MASC, NoMASC
 
 class TouristLanguage(nn.Module):
 
@@ -181,6 +181,7 @@ class TouristLanguage(nn.Module):
         state['decoder_hid_sz'] = self.decoder_hid_sz
         state['num_words'] = self.num_words
         state['start_token'] = self.start_token
+        state['end_token'] = self.end_token
         state['parameters'] = self.state_dict()
         torch.save(state, path)
 
@@ -191,7 +192,7 @@ class TouristLanguage(nn.Module):
         tourist = cls(state['act_emb_sz'], state['act_hid_sz'], state['num_actions'],
                       state['obs_emb_sz'], state['obs_hid_sz'], state['num_observations'],
                       state['decoder_emb_sz'], state['decoder_hid_sz'], state['num_words'],
-                      start_token=state['start_token'])
+                      start_token=state['start_token'], end_token=state['end_token'])
         tourist.load_state_dict(state['parameters'])
         return tourist
 

@@ -116,7 +116,7 @@ class TalkTheWalkLanguage(object):
                     act = msg['text']
                     act_id = self.act_aware_dict.encode(act)
                     if act_id >= 0:
-                        new_loc = step_aware(act_id, loc, boundaries)
+                        new_loc = step_aware(act, loc, boundaries)
                         old_loc = loc
                         loc = new_loc
 
