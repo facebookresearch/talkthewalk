@@ -61,7 +61,7 @@ if __name__ == '__main__':
 
     guide = GuideContinuous(args.vocab_sz, len(train_data.map.landmark_dict),
                             apply_masc=args.apply_masc, T=args.T)
-    tourist = TouristContinuous(args.vocab_sz, len(train_data.map.landmark_dict),
+    tourist = TouristContinuous(args.vocab_sz, len(train_data.map.landmark_dict), len(train_data.act_dict),
                                 apply_masc=args.apply_masc, T=args.T)
 
     params = list(tourist.parameters()) + list(guide.parameters())

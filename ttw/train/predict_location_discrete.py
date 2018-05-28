@@ -93,7 +93,7 @@ if __name__ == '__main__':
 
     guide = GuideDiscrete(args.vocab_sz, len(train_data.map.landmark_dict),
                           apply_masc=args.apply_masc, T=args.T)
-    tourist = TouristDiscrete(args.vocab_sz, len(train_data.map.landmark_dict),
+    tourist = TouristDiscrete(args.vocab_sz, len(train_data.map.landmark_dict), len(train_data.act_dict),
                               apply_masc=args.apply_masc, T=args.T)
 
     if args.cuda:

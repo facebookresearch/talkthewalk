@@ -21,6 +21,7 @@ class TalkTheWalkEmergent(object):
         self.data_dir = data_dir
         self.map = Map(data_dir, TalkTheWalkEmergent.neighborhoods, include_empty_corners=True)
         self.T = T
+        self.act_dict = ActionAgnosticDictionary()
 
         self.configs = json.load(open(os.path.join(data_dir, 'configurations.{}.json'.format(set))))
         self.feature_loaders = dict()
@@ -41,7 +42,7 @@ class TalkTheWalkEmergent(object):
         self.data['landmarks'] = list()
         self.data['target'] = list()
 
-        action_set = [[0, 1, 2, 3]] * self.T
+        action_set = [['UP', 'DOWN', 'LEFT', 'RIGHT']] * self.T
         all_possible_actions = list(itertools.product(*action_set))
 
         for config in self.configs:
@@ -58,9 +59,9 @@ class TalkTheWalkEmergent(object):
                         obs[k].append(feature_loader.get(neighborhood, loc))
 
                     if p != self.T:
-                        sampled_act = a[p]
+                        sampled_act = self.act_dict.encode(a[p])
                         actions.append(sampled_act)
-                        loc = step_agnostic(sampled_act, loc, boundaries)
+                        loc = step_agnostic(a[p], loc, boundaries)
 
                 if self.T == 0:
                     actions.append(0)
@@ -90,7 +91,8 @@ class TalkTheWalkLanguage(object):
         self.dialogues = json.load(open(os.path.join(data_dir, 'talkthewalk.{}.json'.format(set))))
         self.dict = Dictionary(file=os.path.join(data_dir, 'dict.txt'), min_freq=min_freq)
         self.map = Map(data_dir, TalkTheWalkLanguage.neighborhoods, include_empty_corners=True)
-        self.act_dict = ActionDictionary()
+        self.act_dict = ActionAgnosticDictionary()
+        self.act_aware_dict = ActionAwareDictionary()
 
         self.feature_loader = GoldstandardFeatures(self.map)
 
@@ -111,7 +113,7 @@ class TalkTheWalkLanguage(object):
             dialogue_context = list()
             for msg in config['dialog']:
                 if msg['id'] == 'Tourist':
-                    act_id = self.act_dict.encode_aware(msg['text'])
+                    act_id = self.act_aware_dict.encode(msg['text'])
                     if act_id >= 0:
                         new_loc = step_aware(act_id, loc, boundaries)
                         old_loc = loc
@@ -121,8 +123,8 @@ class TalkTheWalkLanguage(object):
                             act_memory.append(act_id)
                             obs_memory.append(self.feature_loader.get(neighborhood, new_loc))
                         else:
-                            if self.act_dict.decode_aware(act_id) == 'ACTION:FORWARD':  # went forward
-                                act_dir = self.act_dict.encode_agnostic(old_loc, new_loc)
+                            if self.act_aware_dict.decode(act_id) == 'ACTION:FORWARD':  # went forward
+                                act_dir = self.act_dict.encode_from_location(old_loc, new_loc)
                                 act_memory.append(act_dir)
                                 obs_memory.append(self.feature_loader.get(neighborhood, loc))
                     elif len(msg['text'].split(' ')) > min_sent_len:
@@ -166,27 +168,37 @@ class LandmarkDictionary(object):
     def __len__(self):
         return len(self.i2landmark) + 1
 
-class ActionDictionary(object):
-    def __init__(self, orientation_aware=False):
-        self.orientation_aware = orientation_aware
+class ActionAwareDictionary:
+
+    def __init__(self):
         self.aware_id2act = ['ACTION:TURNLEFT', 'ACTION:TURNRIGHT', 'ACTION:FORWARD']
         self.aware_act2id = {v: k for k, v in enumerate(self.aware_id2act)}
 
-        self.agnostic_id2act = ['LEFT', 'UP', 'RIGHT', 'DOWN', 'STAYED']
-        self.agnostic_act2id = {v: k for k, v in enumerate(self.agnostic_id2act)}
-
-
-    def encode_aware(self, msg):
+    def encode(self, msg):
         if msg in self.aware_act2id:
             return self.aware_act2id[msg]+1
         return -1
 
-    def decode_aware(self, id):
+    def decode(self, id):
         return self.aware_id2act[id-1]
 
-        # Determine if tourist went "up", "down", "left", "right"
+    def __len__(self):
+        return len(self.aware_id2act) + 1
 
-    def encode_agnostic(self, old_loc, new_loc):
+
+class ActionAgnosticDictionary:
+    def __init__(self):
+        self.agnostic_id2act = ['LEFT', 'UP', 'RIGHT', 'DOWN', 'STAYED']
+        self.agnostic_act2id = {v: k for k, v in enumerate(self.agnostic_id2act)}
+
+    def encode(self, msg):
+        return self.agnostic_act2id[msg] + 1
+
+    def decode(self, id):
+        return self.agnostic_id2act[id-1]
+
+    def encode_from_location(self, old_loc, new_loc):
+        """Determine if tourist went up, down, left, or right"""
         step_to_dir = {
             0: {
                 1: 'UP',
@@ -205,23 +217,18 @@ class ActionDictionary(object):
         act = self.agnostic_act2id[step_to_dir[step[0]][step[1]]]
         return act + 1
 
-    def decode_agnostic(self, id):
-        return self.agnostic_id2act[id-1]
-
     def __len__(self):
-        if not self.orientation_aware:
-            return len(self.agnostic_id2act) + 1
-        else:
-            return len(self.aware_id2act) + 1
+        return len(self.agnostic_id2act) + 1
 
 
 class Map(object):
-    def __init__(self, data_dir, neighborhoods, include_empty_corners=False):
+    def __init__(self, data_dir, neighborhoods, include_empty_corners=True):
         super(Map, self).__init__()
         self.coord_to_landmarks = dict()
         self.include_empty_corners = include_empty_corners
         self.landmark_dict = LandmarkDictionary()
         self.data_dir = data_dir
+        self.landmarks = dict()
 
         self.boundaries = dict()
         self.boundaries['hellskitchen'] = [3, 3]
@@ -233,8 +240,8 @@ class Map(object):
         for neighborhood in neighborhoods:
             self.coord_to_landmarks[neighborhood] = [[[] for _ in range(self.boundaries[neighborhood][1] * 2 + 4)]
                                                      for _ in range(self.boundaries[neighborhood][0] * 2 + 4)]
-            landmarks = json.load(open(os.path.join(data_dir, "{}_map.json".format(neighborhood))))
-            for landmark in landmarks:
+            self.landmarks[neighborhood] = json.load(open(os.path.join(data_dir, "{}_map.json".format(neighborhood))))
+            for landmark in self.landmarks[neighborhood]:
                 coord = self.transform_map_coordinates(landmark)
                 landmark_idx = self.landmark_dict.encode(landmark['type'])
                 self.coord_to_landmarks[neighborhood][coord[0]][coord[1]].append(landmark_idx)
@@ -264,6 +271,13 @@ class Map(object):
         assert 0 <= label_index[1] < 4
 
         return landmarks, label_index
+
+    def get_unprocessed_landmarks(self, neighborhood, boundaries):
+        landmark_list = []
+        for landmark in self.landmarks[neighborhood]:
+            if boundaries[0] >= landmark['x'] * 2 <= boundaries[2] and boundaries[1] >= landmark['y'] <= boundaries[3]:
+                landmark_list.append(landmark)
+        return landmark_list
 
 
 def get_orientation_keys(x, y, cross_the_street=False):
@@ -428,7 +442,7 @@ class ResnetFeatures:
 def step_agnostic(action, loc, boundaries):
     """Return new location after """
     new_loc = copy.deepcopy(loc)
-    step = [(0, 1), (1, 0), (0, -1), (-1, 0)][action]
+    step = {'UP': (0, 1), 'RIGHT': (1, 0), 'DOWN': (0, -1), 'LEFT': (-1, 0)}[action]
     new_loc[0] = min(max(loc[0] + step[0], boundaries[0]), boundaries[2])
     new_loc[1] = min(max(loc[1] + step[1], boundaries[1]), boundaries[3])
     return new_loc

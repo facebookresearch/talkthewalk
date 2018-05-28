@@ -6,10 +6,11 @@ from ttw.models.modules import MASC, NoMASC, CBoW
 
 class TouristContinuous(nn.Module):
 
-    def __init__(self, vocab_sz, num_observations, T=2, apply_masc=True):
+    def __init__(self, vocab_sz, num_observations, num_actions, T=2, apply_masc=True):
         super(TouristContinuous, self).__init__()
         self.vocab_sz = vocab_sz
         self.num_observations = num_observations
+        self.num_actions = num_actions
         self.apply_masc = apply_masc
         self.T = T
         self.goldstandard_emb = CBoW(num_observations, vocab_sz, init_std=0.1, padding_idx=0)
@@ -19,7 +20,7 @@ class TouristContinuous(nn.Module):
             self.obs_write_gate.append(nn.Parameter(torch.FloatTensor(1, vocab_sz).normal_(0.0, 0.1)))
 
         if apply_masc:
-            self.action_emb = nn.Embedding(4, vocab_sz, padding_idx=0)
+            self.action_emb = nn.Embedding(num_actions, vocab_sz, padding_idx=0)
             self.act_write_gate = nn.Parameter(torch.FloatTensor(1, T, vocab_sz).normal_(0.0, 0.1))
 
 
@@ -44,6 +45,7 @@ class TouristContinuous(nn.Module):
         state = dict()
         state['vocab_sz'] = self.vocab_sz
         state['num_observations'] = self.num_observations
+        state['num_actions'] = self.num_actions
         state['T'] = self.T
         state['apply_masc'] = self.apply_masc
         state['parameters'] = self.state_dict()
@@ -52,8 +54,8 @@ class TouristContinuous(nn.Module):
     @classmethod
     def load(cls, path):
         state = torch.load(path)
-        tourist = cls(state['vocab_sz'], state['num_observations'], T=state['T'],
-                      apply_masc=state['apply_masc'])
+        tourist = cls(state['vocab_sz'], state['num_observations'], state['num_actions'],
+                      T=state['T'], apply_masc=state['apply_masc'])
         tourist.load_state_dict(state['parameters'])
         return tourist
 
@@ -106,7 +108,8 @@ class GuideContinuous(nn.Module):
         logits = torch.bmm(landmarks, obs_msg.unsqueeze(-1)).squeeze(-1)
         out['prob'] = F.softmax(logits, dim=1)
 
-        y_true = (batch['target'][:, 0]*4 + batch['target'][:, 1]).squeeze(-1)
+
+        y_true = (batch['target'][:, 0]*4 + batch['target'][:, 1])
 
         out['loss'] = self.loss(logits, y_true)
         out['acc'] = sum([1.0 for pred, target in zip(out['prob'].max(1)[1].data.cpu().numpy(), y_true.data.cpu().numpy()) if pred == target])/y_true.size(0)
