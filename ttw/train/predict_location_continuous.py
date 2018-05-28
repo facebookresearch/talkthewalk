@@ -71,8 +71,7 @@ if __name__ == '__main__':
         tourist = tourist.cuda()
         guide = guide.cuda()
 
-    best_train_loss, best_valid_loss, best_test_loss = None, 1e16, None
-    best_train_acc, best_valid_acc, best_test_acc = None, None, None
+    best_train_acc, best_valid_acc, best_test_acc = 0.0, 0.0, 0.0
 
     for i in range(1, args.num_epochs + 1):
         # train
@@ -87,11 +86,7 @@ if __name__ == '__main__':
                                                                     valid_acc,
                                                                     test_acc))
 
-        if valid_loss < best_valid_loss:
-            best_train_loss = train_loss
-            best_valid_loss = valid_loss
-            best_train_loss = test_loss
-
+        if valid_acc > best_valid_acc:
             best_train_acc, best_valid_acc, best_test_acc = train_acc, valid_acc, test_acc
 
             tourist.save(os.path.join(exp_dir, 'tourist.pt'))

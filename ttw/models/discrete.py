@@ -142,7 +142,7 @@ class GuideDiscrete(nn.Module):
         out = dict()
         logits = torch.bmm(landmarks, msg_obs.unsqueeze(-1)).squeeze(-1)
         out['prob'] = F.softmax(logits, 1)
-        y_true = (batch['target'][:, 0] * 4 + batch['target'][:, 1]).squeeze(-1)
+        y_true = (batch['target'][:, 0] * 4 + batch['target'][:, 1])
 
         out['loss'] = self.loss(logits, y_true)
         out['acc'] = sum(

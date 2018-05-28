@@ -10,13 +10,14 @@ import torch
 
 from ttw.models import TouristContinuous, GuideContinuous, TouristDiscrete, GuideDiscrete, TouristLanguage, \
     GuideLanguage
-from ttw.data_loader import Map, step_aware, get_collate_fn, GoldstandardFeatures, TalkTheWalkEmergent
+from ttw.data_loader import Map, step_aware, get_collate_fn, GoldstandardFeatures, TalkTheWalkEmergent, ActionAgnosticDictionary
 
 
 def evaluate(configs, predict_location_fn, collate_fn, map, feature_loader, random_walk=True, cuda=False, T=2):
     correct, total = 0.0, 0.0
     num_actions = []
     log = []
+    act_dict = ActionAgnosticDictionary()
 
     for config in configs:
         neighborhood = config['neighborhood']
@@ -86,16 +87,18 @@ def evaluate(configs, predict_location_fn, collate_fn, map, feature_loader, rand
                             break
 
             if random_walk:
-                act = random.randint(0, 3)
-                actions.append(act)
+                act = ['UP', 'DOWN', 'RIGHT', 'LEFT'][random.randint(0, 3)]
+                act_id = act_dict.encode(act)
+                actions.append(act_id)
+                act_orientation = act_dict.act_to_orientation[act]
 
-                while loc[2] != act:
-                    loc = step_aware(act_dict.encode_aware('ACTION:TURNRIGHT'), loc, boundaries)
+                while loc[2] != act_orientation:
+                    loc = step_aware('ACTION:TURNRIGHT', loc, boundaries)
                     entry['dialog'].append(
                         {'id': 'Tourist', 'episode_done': False, 'text': 'ACTION:TURNRIGHT', 'time': t})
                     t += 1
 
-                loc = step_aware(2, loc, boundaries)
+                loc = step_aware('ACTION:FORWARD', loc, boundaries)
                 entry['dialog'].append({'id': 'Tourist', 'episode_done': False, 'text': 'ACTION:FORWARD', 'time': t})
                 t += 1
 
@@ -159,13 +162,26 @@ if __name__ == '__main__':
             guide = guide.cuda()
         T = tourist.T
 
-
-        def _predict_location(X_batch, action_batch, landmark_batch, y_batch):
-            t_comms, t_probs, t_val = tourist(X_batch, action_batch)
+        def _predict_location(batch):
+            t_out = tourist(batch)
             if args.cuda:
-                t_comms = [x.cuda() for x in t_comms]
-            prob = guide(t_comms, landmark_batch)
-            return prob, t_comms
+                t_out['comms'] = [x.cuda() for x in t_out['comms']]
+            g_out = guide(t_out['comms'], batch)
+            return g_out['prob'], t_out['comms']
+    elif args.communication == 'natural':
+        tourist = TouristDiscrete.load(args.tourist_model)
+        guide = GuideDiscrete.load(args.guide_model)
+        if args.cuda:
+            tourist = tourist.cuda()
+            guide = guide.cuda()
+        T = tourist.T
+
+        def _predict_location(batch):
+            t_out = tourist(batch)
+            if args.cuda:
+                t_out['comms'] = [x.cuda() for x in t_out['comms']]
+            g_out = guide(t_out['comms'], batch)
+            return g_out['prob'], t_out['comms']
 
     collate_fn = get_collate_fn(args.cuda)
     accs = []
@@ -182,8 +198,8 @@ if __name__ == '__main__':
     accs = []
     num_actions = []
     for _ in range(1):
-        train_acc, train_log, train_num_actions = evaluate(valid_configs, _predict_location, landmark_map,
-                                                           feature_loaders, cuda=args.cuda, T=T)
+        train_acc, train_log, train_num_actions = evaluate(valid_configs, _predict_location, collate_fn, map,
+                                                           feature_loader, cuda=args.cuda, T=T)
         accs.append(train_acc)
         num_actions.append(train_num_actions)
 
@@ -193,8 +209,8 @@ if __name__ == '__main__':
     accs = []
     num_actions = []
     for _ in range(1):
-        train_acc, train_log, train_num_actions = evaluate(test_configs, _predict_location, landmark_map,
-                                                           feature_loaders, cuda=args.cuda, T=T)
+        train_acc, train_log, train_num_actions = evaluate(test_configs, _predict_location, collate_fn, map,
+                                                           feature_loader, cuda=args.cuda, T=T)
         accs.append(train_acc)
         num_actions.append(train_num_actions)
 
