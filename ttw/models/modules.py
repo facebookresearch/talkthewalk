@@ -83,7 +83,7 @@ class AttentionHop(nn.Module):
         score = torch.bmm(inp_seq, query.unsqueeze(-1)).squeeze(-1)
         score = score - 1e30 * (1.0 - mask)
         att_score = F.softmax(score, dim=-1)
-        extracted_msg = torch.bmm(att_score.unsqueeze(1), inp_seq).squeeze()
+        extracted_msg = torch.bmm(att_score.unsqueeze(1), inp_seq).squeeze(1)
         return extracted_msg
 
 class GRUEncoder(nn.Module):

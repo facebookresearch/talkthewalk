@@ -32,13 +32,13 @@ def epoch(loader, tourist, guide, g_opt=None, t_opt=None,
             batch['utterance'] = out['utterance']
             batch['utterance_mask'] = out['utterance_mask']
 
-        loss, acc = guide.forward(batch)
+        g_out = guide.forward(batch)
 
-        reward = -loss.squeeze()
-        loss = loss.sum()
+        reward = -g_out['sl_loss'].squeeze()
+        loss = g_out['sl_loss'].sum()
 
         total += batch['landmarks'].size(0)
-        accuracy += acc * batch['landmarks'].size(0)
+        accuracy += g_out['acc'] * batch['landmarks'].size(0)
 
         if g_opt is not None:
             g_opt.zero_grad()

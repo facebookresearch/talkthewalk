@@ -17,11 +17,11 @@ def eval_epoch(loader, guide, opt=None):
     loss, accs, total = 0.0, 0.0, 0.0
 
     for batch in loader:
-        l, acc = guide.forward(batch, add_rl_loss=True)
-        accs += acc
+        g_out = guide.forward(batch, add_rl_loss=True)
+        accs += g_out['acc']
         total += 1
-        l = l.sum()
-        loss += l.cpu().data.numpy()
+        l = (g_out['rl_loss'] + g_out['sl_loss']).sum()
+        loss += l.item()
 
         if opt is not None:
             opt.zero_grad()

@@ -117,7 +117,7 @@ class TouristLanguage(nn.Module):
 
                     preds.append(samples)
                     probs.append(prob.unsqueeze(1))
-                    input_ind = samples.squeeze()
+                    input_ind = samples.squeeze(-1)
 
                 out = {}
                 out['utterance'] = torch.cat(preds, 1)
@@ -243,7 +243,7 @@ class GuideLanguage(nn.Module):
 
         last_hidden_states = hidden_states[torch.arange(batch_size).long(), last_state_indices, :]
         T_dist = F.softmax(self.T_prediction_fn(last_hidden_states))
-        sampled_Ts = T_dist.multinomial(1).squeeze()
+        sampled_Ts = T_dist.multinomial(1).squeeze(-1)
 
         obs_msgs = list()
         feat_controller = self.feat_control_emb.unsqueeze(0).repeat(batch_size, 1)
@@ -276,24 +276,23 @@ class GuideLanguage(nn.Module):
 
         landmarks = landmarks.resize(batch_size, landmarks.size(1), 16).transpose(1, 2)
 
+        out = dict()
         logits = torch.bmm(landmarks, tourist_obs_msg.unsqueeze(-1)).squeeze(-1)
-        prob = F.softmax(logits, dim=1)
-        y_true = (batch['target'][:, 0] * 4 + batch['target'][:, 1]).squeeze()
+        out['prob'] = F.softmax(logits, dim=1)
+        y_true = (batch['target'][:, 0] * 4 + batch['target'][:, 1])
 
-        sl_loss = -torch.log(torch.gather(prob, 1, y_true.unsqueeze(-1)) + 1e-8)
+        out['sl_loss'] = -torch.log(torch.gather(out['prob'], 1, y_true.unsqueeze(-1)) + 1e-8)
 
         # add RL loss
-        loss = sl_loss
         if add_rl_loss:
-            reward = -(sl_loss - sl_loss.mean())
+            advantage = -(out['sl_loss'] - out['sl_loss'].mean())
 
             log_prob = torch.log(torch.gather(T_dist, 1, sampled_Ts.unsqueeze(-1)) + 1e-8)
-            rl_loss = (log_prob*reward)
-            loss = loss - rl_loss
+            out['rl_loss'] = log_prob*advantage
 
-        acc = sum([1.0 for pred, target in zip(prob.max(1)[1].data.cpu().numpy(), y_true.data.cpu().numpy()) if
+        out['acc'] = sum([1.0 for pred, target in zip(out['prob'].max(1)[1].data.cpu().numpy(), y_true.data.cpu().numpy()) if
                    pred == target]) / batch_size
-        return loss, acc
+        return out
 
     def save(self, path):
         state = dict()

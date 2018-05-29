@@ -8,6 +8,7 @@ import time
 import numpy
 import torch
 
+from torch.autograd import Variable
 from ttw.models import TouristContinuous, GuideContinuous, TouristDiscrete, GuideDiscrete, TouristLanguage, \
     GuideLanguage
 from ttw.data_loader import Map, step_aware, get_collate_fn, GoldstandardFeatures, TalkTheWalkEmergent, ActionAgnosticDictionary
@@ -126,6 +127,7 @@ if __name__ == '__main__':
     parser.add_argument('--tourist-model', type=str)
     parser.add_argument('--guide-model', type=str)
     parser.add_argument('--communication', type=str, choices=['continuous', 'discrete', 'natural'])
+    parser.add_argument('--decoding-strategy', type=str, choices=['beam_search', 'greedy', 'sample'])
 
     args = parser.parse_args()
     print(args)
@@ -169,19 +171,23 @@ if __name__ == '__main__':
             g_out = guide(t_out['comms'], batch)
             return g_out['prob'], t_out['comms']
     elif args.communication == 'natural':
-        tourist = TouristDiscrete.load(args.tourist_model)
-        guide = GuideDiscrete.load(args.guide_model)
+        tourist = TouristLanguage.load(args.tourist_model)
+        guide = GuideLanguage.load(args.guide_model)
         if args.cuda:
             tourist = tourist.cuda()
             guide = guide.cuda()
-        T = tourist.T
+        T = 2
 
         def _predict_location(batch):
-            t_out = tourist(batch)
-            if args.cuda:
-                t_out['comms'] = [x.cuda() for x in t_out['comms']]
-            g_out = guide(t_out['comms'], batch)
-            return g_out['prob'], t_out['comms']
+            batch['observations'] = batch['goldstandard']
+            batch['observations_mask'] = Variable(torch.FloatTensor(1, T+1, batch['goldstandard'].size(2)).fill_(1.0)).cuda()
+            batch['actions_mask'] = Variable(torch.FloatTensor(1, T).fill_(1.0)).cuda()
+
+            t_out = tourist(batch, train=False, decoding_strategy=args.decoding_strategy)
+            batch['utterance'] = t_out['utterance']
+            batch['utterance_mask'] = t_out['utterance_mask']
+            g_out = guide(batch, add_rl_loss=False)
+            return g_out['prob'], None
 
     collate_fn = get_collate_fn(args.cuda)
     accs = []
