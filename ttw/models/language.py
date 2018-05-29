@@ -137,7 +137,7 @@ class TouristLanguage(nn.Module):
 
                     return words, logprobs, hs
 
-                seq_gen = SequenceGenerator(_step_fn, self.end_token, max_sequence_length=max_sample_length, beam_size=10, length_normalization_factor=1.1)
+                seq_gen = SequenceGenerator(_step_fn, self.end_token, max_sequence_length=max_sample_length, beam_size=4, length_normalization_factor=0.5)
                 start_tokens = [[self.start_token] for _ in range(batch_size)]
                 hidden = [[0.0]*self.decoder_hid_sz]*batch_size
                 beam_out = seq_gen.beam_search(start_tokens, hidden, context_emb.cpu().data.numpy())
@@ -145,7 +145,7 @@ class TouristLanguage(nn.Module):
                 mask_tensor = torch.FloatTensor(batch_size, max_sample_length).zero_()
 
                 for i, seq in enumerate(beam_out):
-                    pred_tensor[i, :len(seq.output)] = torch.LongTensor(seq.output[1:])
+                    pred_tensor[i, :(len(seq.output)-1)] = torch.LongTensor(seq.output[1:])
                     mask_tensor[i, :(len(seq.output)-1)] = 1.0
 
                 out = {}
