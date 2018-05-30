@@ -3,34 +3,40 @@ import os
 
 import torch
 import torch.optim as optim
+from torch.autograd import Variable
 from torch.utils.data.dataloader import DataLoader
 
-from ttw.data_loader import TalkTheWalkLanguage, get_collate_fn
+from ttw.data_loader import TalkTheWalkLanguage, TalkTheWalkEmergent, get_collate_fn
 from ttw.models import GuideLanguage, TouristLanguage
 from ttw.utils import create_logger
+from ttw.dict import Dictionary
+
 
 def cache(dataset, tourist, collate_fn, decoding_strategy='greedy'):
-    print("Caching tourist utterances...")
+    print("Caching tourist utterances")
     loader = DataLoader(dataset, batch_size=128, collate_fn=collate_fn, shuffle=False)
     index = 0
+    utterances = list()
     for batch in loader:
         t_out = tourist.forward(batch, train=False, decoding_strategy=decoding_strategy)
         for i in range(t_out['utterance'].size(0)):
             utt_len = int(t_out['utterance_mask'][i, :].sum().item())
-            dataset.data['utterance'][index+i] = t_out['utterance'][i, :utt_len].cpu().data.numpy().tolist()
+            utterances.append(t_out['utterance'][i, :utt_len].cpu().data.numpy().tolist())
         index += t_out['utterance'].size(0)
-
+    dataset.data['utterance'] = utterances
 
 def epoch(loader, tourist, guide, g_opt=None, t_opt=None,
-          decoding_strategy='beam_search', on_the_fly=False):
+          decoding_strategy='greedy', beam_width=4, on_the_fly=False):
     accuracy, total = 0.0, 0.0
 
     for batch in loader:
         if on_the_fly:
-            out = tourist.forward(batch,
-                              decoding_strategy=decoding_strategy, train=False)
-            batch['utterance'] = out['utterance']
-            batch['utterance_mask'] = out['utterance_mask']
+            t_out = tourist.forward(batch,
+                                  decoding_strategy=decoding_strategy,
+                                  beam_width=beam_width,
+                                  train=False)
+            batch['utterance'] = t_out['utterance']
+            batch['utterance_mask'] = t_out['utterance_mask']
 
         g_out = guide.forward(batch)
 
@@ -47,9 +53,9 @@ def epoch(loader, tourist, guide, g_opt=None, t_opt=None,
 
         if t_opt is not None:
             # reinforce
-            probs = out['probs']
-            mask = out['mask']
-            sampled_ind = out['preds']
+            probs = t_out['probs']
+            mask = t_out['mask']
+            sampled_ind = t_out['preds']
 
             loss = 0.0
 
@@ -75,6 +81,9 @@ if __name__ == '__main__':
     parser.add_argument('--cuda', action='store_true')
     parser.add_argument('--on-the-fly', action='store_true',
                         help="Generate samples from tourist model on the fly. If not, samples are cached")
+    parser.add_argument('--trajectories', choices=['human', 'all'], default='human',
+                        help="Train either on *all* trajectories of lengh T or on human trajectories of the dataset")
+    parser.add_argument('--T', type=int, default=2)
     parser.add_argument('--tourist-model', type=str)
     parser.add_argument('--guide-model', type=str)
     parser.add_argument('--num-epochs', type=int, default=10)
@@ -83,6 +92,7 @@ if __name__ == '__main__':
     parser.add_argument('--train-tourist', action='store_true')
     parser.add_argument('--exp-name', default='test')
     parser.add_argument('--decoding-strategy', type=str, default='greedy')
+    parser.add_argument('--beam-width', type=int, default=4)
 
     args = parser.parse_args()
 
@@ -95,13 +105,23 @@ if __name__ == '__main__':
 
     data_dir = args.data_dir
 
-    train_data = TalkTheWalkLanguage(data_dir, 'train')
-    train_loader = DataLoader(train_data, args.batch_sz, collate_fn=get_collate_fn(args.cuda))
+    if args.trajectories == 'all':
+        dictionary = Dictionary(file=os.path.join(data_dir, 'dict.txt'), min_freq=3)
+        train_data = TalkTheWalkEmergent(data_dir, 'train', T=args.T)
+        train_data.dict = dictionary
+        valid_data = TalkTheWalkEmergent(data_dir, 'valid', T=args.T)
+        valid_data.dict = dictionary
+        test_data = TalkTheWalkEmergent(data_dir, 'test', T=args.T)
+        test_data.dict = dictionary
+    elif args.trajectories == 'human':
+        train_data = TalkTheWalkLanguage(data_dir, 'train')
+        valid_data = TalkTheWalkLanguage(data_dir, 'valid')
+        test_data = TalkTheWalkLanguage(data_dir, 'test')
 
-    valid_data = TalkTheWalkLanguage(data_dir, 'valid')
+    train_loader = DataLoader(train_data, args.batch_sz, collate_fn=get_collate_fn(args.cuda))
     valid_loader = DataLoader(valid_data, args.batch_sz, collate_fn=get_collate_fn(args.cuda))
 
-    test_data = TalkTheWalkLanguage(data_dir, 'test')
+
     test_loader = DataLoader(test_data, args.batch_sz, collate_fn=get_collate_fn(args.cuda))
 
     tourist = TouristLanguage.load(args.tourist_model)

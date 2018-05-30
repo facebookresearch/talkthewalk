@@ -30,7 +30,7 @@ def show_samples(dataset, tourist, num_samples=10, cuda=True, logger=None, decod
 
     for i in range(len(indices)):
         o = ''
-        for obs in data[i]['observations']:
+        for obs in data[i]['goldstandard']:
             o += '(' + ','.join([dataset.map.landmark_dict.decode(o_ind) for o_ind in obs]) + ') ,'
         # a = ', '.join([i2act[a_ind] for a_ind in actions[i]])
         a = ','.join([dataset.act_dict.decode(a_ind) for a_ind in data[i]['actions']])

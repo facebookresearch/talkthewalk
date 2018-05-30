@@ -47,12 +47,12 @@ class TouristLanguage(nn.Module):
 
         return context_emb
 
-    def forward(self, batch,
-                decoding_strategy='beam_search', max_sample_length=20, train=True):
-        batch_size = batch['observations'].size(0)
-        obs_seq_len = batch['observations_mask'][:, :, 0].sum(1).long()
+    def forward(self, batch, decoding_strategy='beam_search',
+                max_sample_length=20, beam_width=4, train=True):
+        batch_size = batch['goldstandard'].size(0)
+        obs_seq_len = batch['goldstandard_mask'][:, :, 0].sum(1).long()
         act_seq_len = batch['actions_mask'].sum(1).long()
-        context_emb = self.encode(batch['observations'], obs_seq_len, batch['actions'], act_seq_len)
+        context_emb = self.encode(batch['goldstandard'], obs_seq_len, batch['actions'], act_seq_len)
 
         if train:
             # teacher forcing
@@ -91,7 +91,7 @@ class TouristLanguage(nn.Module):
                 hs = Variable(torch.FloatTensor(1, batch_size, self.decoder_hid_sz).fill_(0.0))
                 mask = Variable(torch.FloatTensor(batch_size, max_sample_length).zero_())
                 eos = torch.ByteTensor([0]*batch_size)
-                if batch['observations'].is_cuda:
+                if batch['goldstandard'].is_cuda:
                     hs = hs.cuda()
                     eos = eos.cuda()
                     mask = mask.cuda()
@@ -137,7 +137,8 @@ class TouristLanguage(nn.Module):
 
                     return words, logprobs, hs
 
-                seq_gen = SequenceGenerator(_step_fn, self.end_token, max_sequence_length=max_sample_length, beam_size=4, length_normalization_factor=0.5)
+                seq_gen = SequenceGenerator(_step_fn, self.end_token, max_sequence_length=max_sample_length,
+                                            beam_size=beam_width, length_normalization_factor=0.5)
                 start_tokens = [[self.start_token] for _ in range(batch_size)]
                 hidden = [[0.0]*self.decoder_hid_sz]*batch_size
                 beam_out = seq_gen.beam_search(start_tokens, hidden, context_emb.cpu().data.numpy())

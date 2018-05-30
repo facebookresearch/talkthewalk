@@ -13,7 +13,9 @@ from ttw.dict import Dictionary, START_TOKEN, END_TOKEN
 
 
 class TalkTheWalkEmergent(object):
-    """Dataset loading for emergent language experiments"""
+    """Dataset loading for emergent language experiments
+
+    Generates all tourist trajectories of length T"""
 
     neighborhoods = ['hellskitchen', 'williamsburg', 'eastvillage', 'fidi', 'uppereast']
 
@@ -83,7 +85,10 @@ class TalkTheWalkEmergent(object):
 
 
 class TalkTheWalkLanguage(object):
-    """Dataset loading for natural language experiments"""
+    """Dataset loading for natural language experiments.
+
+    Only contains trajectories taken by human annotators
+    """
 
     neighborhoods = ['hellskitchen', 'williamsburg', 'eastvillage', 'fidi', 'uppereast']
 
@@ -98,7 +103,7 @@ class TalkTheWalkLanguage(object):
 
         self.data = dict()
         self.data['actions'] = list()
-        self.data['observations'] = list()
+        self.data['goldstandard'] = list()
         self.data['landmarks'] = list()
         self.data['target'] = list()
         self.data['utterance'] = list()
@@ -139,7 +144,7 @@ class TalkTheWalkLanguage(object):
                         self.data['target'].append(tgt)
 
                         self.data['actions'].append(act_memory)
-                        self.data['observations'].append(obs_memory)
+                        self.data['goldstandard'].append(obs_memory)
 
                         act_memory = list()
                         obs_memory = [self.feature_loader.get(neighborhood, loc)]
@@ -483,9 +488,9 @@ def get_collate_fn(cuda=True):
         batch = dict()
         for k in data[0].keys():
             k_data = [data[i][k] for i in range(len(data))]
-            if k in ['goldstandard', 'fasttext', 'textrecog', 'landmarks']:
+            if k in ['fasttext', 'textrecog', 'landmarks']:
                 batch[k], _ = list_to_tensor(k_data)
-            if k in ['observations', 'actions']:
+            if k in ['goldstandard', 'actions']:
                 batch[k], batch[k+'_mask'] = list_to_tensor(k_data)
             if k  == 'utterance':
                 batch['utterance'], batch['utterance_mask'] = list_to_tensor(k_data)

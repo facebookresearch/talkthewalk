@@ -116,6 +116,5 @@ class GRUEncoder(nn.Module):
             first_h = first_h.cuda()
         states = torch.cat([first_h, states], 1)
 
-
         return states[torch.arange(batch_size).long(), seq_lens, :]
 
