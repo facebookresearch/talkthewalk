@@ -23,10 +23,10 @@ sh scripts/download_data.sh DATA_DIR
 where DATA_DIR specifies the directory where the data files will be downloaded to (defaults to ./data).
 
 ### (3) Run experiments
-For all experiments, the data directory can be specified through ```--data-dir```.
+For all experiments, the data directory can be specified through the ```--data-dir``` argument.
 
 ### Experiment directory
-Create a directory to store your experiments (logs and model checkpoints), for instance by the following command:
+Create a directory to store your experiments (logs and model checkpoints), for instance ```exp``` in the main talkthewalk directory:
 ```bash
 mkdir exp
 ```
@@ -34,7 +34,7 @@ By default, experiments will be saved to ```./exp``` but you can change the expe
 The results of each experiment will be saved in this directory under the experiment name, specified via ```--exp-name```.
 
 #### Running emergent language experiments
-For tourist location via discrete communication, run the following command to train the tourist and guide models:
+To reproduce tourist location via discrete communication, run the following command to train the tourist and guide models:
 ```bash
 python ttw/train/predict_location_discrete.py --vocab-sz 500 --apply-masc --T 1 --exp-name discrete_masc_T1 --num-epochs 200 --cuda
 ```
