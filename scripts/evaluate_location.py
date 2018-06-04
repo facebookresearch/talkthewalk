@@ -8,13 +8,13 @@ import time
 import numpy
 import torch
 
-from torch.autograd import Variable
 from ttw.models import TouristContinuous, GuideContinuous, TouristDiscrete, GuideDiscrete, TouristLanguage, \
     GuideLanguage
 from ttw.data_loader import Map, step_aware, get_collate_fn, GoldstandardFeatures, TalkTheWalkEmergent, ActionAgnosticDictionary
+from ttw.dict import Dictionary
 
-
-def evaluate(configs, predict_location_fn, collate_fn, map, feature_loader, random_walk=True, cuda=False, T=2):
+def evaluate(configs, predict_location_fn, collate_fn, map, feature_loader, random_walk=True, T=2,
+             communication='discrete', dict=None):
     correct, total = 0.0, 0.0
     num_actions = []
     log = []
@@ -55,11 +55,16 @@ def evaluate(configs, predict_location_fn, collate_fn, map, feature_loader, rand
                 batch = collate_fn([batch])
 
                 prob, t_comms = predict_location_fn(batch)
-                if isinstance(t_comms, torch.FloatTensor):
+                if communication == 'discrete':
                     entry['dialog'].append({'id': 'Tourist', 'episode_done': False,
                                             'text': ''.join(['%0.0f' % x for x in t_comms[0].cpu().data.numpy()[0, :]]),
                                             'time': t})
-                t += 1
+                elif communication == 'natural':
+                    entry['dialog'].append({'id': 'Tourist', 'episode_done': False,
+                                            'text': dict.decode(t_comms[0]),
+                                            'time': t})
+                    t += 1
+
 
                 prob_array = [[0 for _ in range(4)] for _ in range(4)]
                 prob_data = prob.squeeze().cpu().data.numpy()
@@ -127,7 +132,10 @@ if __name__ == '__main__':
     parser.add_argument('--tourist-model', type=str)
     parser.add_argument('--guide-model', type=str)
     parser.add_argument('--communication', type=str, choices=['continuous', 'discrete', 'natural'])
-    parser.add_argument('--decoding-strategy', type=str, choices=['beam_search', 'greedy', 'sample'])
+    parser.add_argument('--decoding-strategy', type=str, default='greedy',
+                        choices=['beam_search', 'greedy', 'sample'])
+    parser.add_argument('--log-name', type=str, default='test')
+    parser.add_argument('--T', type=int, default=1)
 
     args = parser.parse_args()
     print(args)
@@ -139,6 +147,7 @@ if __name__ == '__main__':
 
     map = Map(args.data_dir, TalkTheWalkEmergent.neighborhoods)
     feature_loader = GoldstandardFeatures(map)
+    dictionary = None
 
     if args.communication == 'continuous':
         tourist = TouristContinuous.load(args.tourist_model)
@@ -173,52 +182,38 @@ if __name__ == '__main__':
     elif args.communication == 'natural':
         tourist = TouristLanguage.load(args.tourist_model)
         guide = GuideLanguage.load(args.guide_model)
+        dictionary = Dictionary(os.path.join(args.data_dir, 'dict.txt'), min_freq=0)
         if args.cuda:
             tourist = tourist.cuda()
             guide = guide.cuda()
-        T = 2
+        T = args.T
 
         def _predict_location(batch):
-            batch['observations'] = batch['goldstandard']
-            batch['observations_mask'] = Variable(torch.FloatTensor(1, T+1, batch['goldstandard'].size(2)).fill_(1.0)).cuda()
-            batch['actions_mask'] = Variable(torch.FloatTensor(1, T).fill_(1.0)).cuda()
-
             t_out = tourist(batch, train=False, decoding_strategy=args.decoding_strategy)
             batch['utterance'] = t_out['utterance']
             batch['utterance_mask'] = t_out['utterance_mask']
             g_out = guide(batch, add_rl_loss=False)
-            return g_out['prob'], None
+            return g_out['prob'], batch['utterance']
 
     collate_fn = get_collate_fn(args.cuda)
-    accs = []
-    num_actions = []
-    for _ in range(1):
-        train_acc, train_log, train_num_actions = evaluate(train_configs, _predict_location, collate_fn, map,
-                                                           feature_loader, cuda=args.cuda, T=T)
-        accs.append(train_acc)
-        num_actions.append(train_num_actions)
 
-    print(numpy.array(accs).mean(), numpy.array(accs).std())
-    print(numpy.array(num_actions).mean(), numpy.array(num_actions).std())
+    train_acc, train_log, train_num_actions = evaluate(train_configs, _predict_location, collate_fn, map,
+                                                       feature_loader, T=T, dict=dictionary,
+                                                       communication=args.communication)
+    # print(train_acc, train_num_actions)
+    # with open('{}.train.json'.format(args.log_name), 'w') as f:
+    #     json.dump(train_log, f)
+    #
+    # valid_acc, valid_log, valid_num_actions = evaluate(valid_configs, _predict_location, collate_fn, map,
+    #                                                    feature_loader, T=T, dict=dictionary,
+    #                                                    communication=args.communication)
+    # print(valid_acc, valid_num_actions)
+    # with open('{}.valid.json'.format(args.log_name), 'w') as f:
+    #     json.dump(valid_log, f)
 
-    accs = []
-    num_actions = []
-    for _ in range(1):
-        train_acc, train_log, train_num_actions = evaluate(valid_configs, _predict_location, collate_fn, map,
-                                                           feature_loader, cuda=args.cuda, T=T)
-        accs.append(train_acc)
-        num_actions.append(train_num_actions)
-
-    print(numpy.array(accs).mean(), numpy.array(accs).std())
-    print(numpy.array(num_actions).mean(), numpy.array(num_actions).std())
-
-    accs = []
-    num_actions = []
-    for _ in range(1):
-        train_acc, train_log, train_num_actions = evaluate(test_configs, _predict_location, collate_fn, map,
-                                                           feature_loader, cuda=args.cuda, T=T)
-        accs.append(train_acc)
-        num_actions.append(train_num_actions)
-
-    print(numpy.array(accs).mean(), numpy.array(accs).std())
-    print(numpy.array(num_actions).mean(), numpy.array(num_actions).std())
+    test_acc, test_log, test_num_actions = evaluate(test_configs, _predict_location, collate_fn, map,
+                                                    feature_loader, T=T, dict=dictionary,
+                                                    communication=args.communication)
+    print(test_acc, test_num_actions)
+    with open('{}.test.json'.format(args.log_name), 'w') as f:
+        json.dump(test_log, f)

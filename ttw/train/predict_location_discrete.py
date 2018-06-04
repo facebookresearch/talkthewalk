@@ -8,7 +8,7 @@ from torch.utils.data.dataloader import DataLoader
 
 from ttw.data_loader import TalkTheWalkEmergent, get_collate_fn
 from ttw.models import TouristDiscrete, GuideDiscrete
-from ttw.utils import create_logger
+from ttw.logger import create_logger
 
 def eval_epoch(loader, tourist, guide, cuda, t_opt=None, g_opt=None):
     tourist.eval()

@@ -1,11 +1,19 @@
 import random
+import argparse
+
 
 from ttw.data_loader import TalkTheWalkLanguage
-from ttw.train.train_tourist import TouristLanguage, show_samples
+from ttw.models import TouristLanguage
 
-train_data = TalkTheWalkLanguage('./data', 'train')
+parser = argparse.ArgumentParser()
+parser.add_argument('--data-dir', type=str, default='./data')
+parser.add_argument('--tourist-model', type=str)
 
-tourist_sl = TouristLanguage.load('/u/devries/Documents/talkthewalk/exp/tourist_sl/tourist.pt').cuda()
+args = parser.parse_args()
+
+train_data = TalkTheWalkLanguage(args.data_dir, 'train')
+
+tourist_sl = TouristLanguage.load(args.tourist_model)
 # tourist_rl = TouristLanguage.load('/u/devries/exp/tourist_rl_2/tourist.pt').cuda()
 
 indices = []

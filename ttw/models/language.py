@@ -40,7 +40,10 @@ class TouristLanguage(nn.Module):
 
     def encode(self, observations, obs_seq_len, actions, act_seq_len):
         observation_emb = self.obs_encoder(observations, obs_seq_len)
-        action_emb = self.act_encoder(actions, act_seq_len)
+        if act_seq_len.sum() > 0:
+            action_emb = self.act_encoder(actions, act_seq_len)
+        else:
+            action_emb = Variable(torch.FloatTensor(act_seq_len.size(0), self.act_hid_sz).fill_(0.0)).cuda()
 
         context_emb = torch.cat([observation_emb, action_emb], 1)
         context_emb = self.context_linear.forward(context_emb)
@@ -51,7 +54,10 @@ class TouristLanguage(nn.Module):
                 max_sample_length=20, beam_width=4, train=True):
         batch_size = batch['goldstandard'].size(0)
         obs_seq_len = batch['goldstandard_mask'][:, :, 0].sum(1).long()
-        act_seq_len = batch['actions_mask'].sum(1).long()
+        if batch['actions_mask'].dim() > 1:
+            act_seq_len = batch['actions_mask'].sum(1).long()
+        else:
+            act_seq_len = Variable(torch.LongTensor(batch_size).fill_(0)).cuda()
         context_emb = self.encode(batch['goldstandard'], obs_seq_len, batch['actions'], act_seq_len)
 
         if train:

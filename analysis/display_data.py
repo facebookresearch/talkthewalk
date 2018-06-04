@@ -1,4 +1,7 @@
+"""Show all samples from the train set."""
 import json
+import argparse
+
 
 f = './data/talkthewalk.train.json'
 data = json.load(open(f))

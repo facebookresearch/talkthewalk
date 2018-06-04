@@ -7,7 +7,7 @@ from torch.utils.data.dataloader import DataLoader
 
 from ttw.models import TouristLanguage
 from ttw.data_loader import TalkTheWalkLanguage, get_collate_fn
-from ttw.utils import create_logger
+from ttw.logger import create_logger
 from ttw.dict import START_TOKEN, END_TOKEN
 
 def show_samples(dataset, tourist, num_samples=10, cuda=True, logger=None, decoding_strategy='sample', indices=None):

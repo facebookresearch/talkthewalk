@@ -1,4 +1,6 @@
+"""This file contains code for generating the train, valid, and test split for TTW."""
 import json
+import argparse
 
 neighborhoods = ['fidi', 'williamsburg', 'eastvillage', 'uppereast', 'hellskitchen']
 

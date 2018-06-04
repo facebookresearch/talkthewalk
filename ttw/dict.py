@@ -1,5 +1,6 @@
 import json
 import os
+import argparse
 
 from nltk.tokenize import TweetTokenizer
 
@@ -88,7 +89,8 @@ class Dictionary:
 
 
 if __name__ == '__main__':
-    data_dir = './data'
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--data-dir', type=str, default='./data')
 
     train_set = json.load(open(os.path.join(data_dir, 'talkthewalk.train.json')))
     valid_set = json.load(open(os.path.join(data_dir, 'talkthewalk.valid.json')))
@@ -103,4 +105,4 @@ if __name__ == '__main__':
                         if len(msg['text'].split(' ')) > 2:
                             dictionary.add(msg['text'])
 
-    dictionary.save('./data/text_dict.txt')
+    dictionary.save('./data/dict.txt')

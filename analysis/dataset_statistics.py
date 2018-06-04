@@ -1,4 +1,9 @@
+"""Calculate some basic statistics over the train set. """
+
 import json
+import argparse
+
+
 
 f = './data/talkthewalk.train.json'
 data = json.load(open(f))
@@ -34,7 +39,7 @@ for sample in data:
 
 print("Number of Turkers", len(worker_ids))
 print("Average number of turns per dialogue", (tourist_actions+tourist_utterance+guide_utterance)/k)
-print("Average number of actions per dialogue", (tourist_actions)/k)
-print("Average number of tourist utterance per dialogue", (tourist_utterance)/k)
-print("Average number of guide utterance per dialogue", (guide_utterance)/k)
-print("Average number of forward per dialogue", (tourist_forward)/k)
+print("Average number of actions per dialogue", tourist_actions/k)
+print("Average number of tourist utterance per dialogue", tourist_utterance/k)
+print("Average number of guide utterance per dialogue", guide_utterance/k)
+print("Average number of forward per dialogue", tourist_forward/k)

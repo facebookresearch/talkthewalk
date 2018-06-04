@@ -282,7 +282,8 @@ class Map(object):
     def get_unprocessed_landmarks(self, neighborhood, boundaries):
         landmark_list = []
         for landmark in self.landmarks[neighborhood]:
-            if boundaries[0] >= landmark['x'] * 2 <= boundaries[2] and boundaries[1] >= landmark['y'] <= boundaries[3]:
+            coord = self.transform_map_coordinates(landmark)
+            if boundaries[0] <= coord[0] <= boundaries[2] and boundaries[1] <= coord[1] <= boundaries[3]:
                 landmark_list.append(landmark)
         return landmark_list
 

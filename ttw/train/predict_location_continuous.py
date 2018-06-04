@@ -6,7 +6,7 @@ from torch.utils.data.dataloader import DataLoader
 
 from ttw.data_loader import TalkTheWalkEmergent, get_collate_fn
 from ttw.models import TouristContinuous, GuideContinuous
-from ttw.utils import create_logger
+from ttw.logger import create_logger
 
 def epoch(loader, tourist, guide, opt=None):
     l, a = 0.0, 0.0

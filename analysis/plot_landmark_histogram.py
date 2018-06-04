@@ -1,29 +1,29 @@
-import os
-
+import argparse
 import matplotlib.pyplot as plt
-import numpy
 
-from ttw.data_loader import ResnetFeatures, Map
-from ttw.train.classify_landmarks import load_data
+from ttw.data_loader import Map
 
 plt.switch_backend('agg')
 plt.style.use('ggplot')
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--data-dir', type=str, default='./data')
+
+    args = parser.parse_args()
+
     neighborhoods = ['fidi', 'hellskitchen', 'williamsburg', 'uppereast', 'eastvillage']
-    landmarks = Map(neighborhoods)
-    data_dir = './data'
+    map = Map(args.data_dir, neighborhoods)
 
-    feature_loaders = dict()
-    feature_loaders['resnet'] = ResnetFeatures(os.path.join(data_dir, 'resnetfeat.json'), pca=False, n_components=None)
-
-    assert (len(feature_loaders) > 0)
-
-    Xs, ys = load_data(neighborhoods, feature_loaders)
-    ys = numpy.array(ys)
-
-    num_examples = ys.sum(axis=0)
-    labels = landmarks.itos
+    num_examples = [0]*len(map.landmark_dict)
+    labels = [map.landmark_dict.decode(i) for i in range(len(map.landmark_dict))]
+    for neighborhood in neighborhoods:
+        for x in map.coord_to_landmarks[neighborhood]:
+            for y in x:
+                for l in y:
+                    num_examples[l] += 1
+    labels = [l for i, l in enumerate(labels) if num_examples[i] > 0]
+    num_examples = [x for x in num_examples if x > 0]
 
     plt.xticks(rotation='vertical')
     plt.bar(labels, num_examples, color='royalblue')

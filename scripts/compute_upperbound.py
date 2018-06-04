@@ -1,11 +1,12 @@
+import argparse
 import copy
 import operator
 import os
 import json
 import random
 import itertools
-from data_loader import Map, GoldstandardFeatures, step_agnostic, step_aware
 
+from ttw.data_loader import Map, GoldstandardFeatures, step_agnostic, step_aware
 
 def init_paths_agnostic(neighborhood, boundaries, goldstandard_features):
     paths = list()
@@ -28,13 +29,13 @@ def init_paths_aware(neighborhood, boundaries, goldstandard_features):
                 paths.append(path)
     return paths
 
-def prediction_upperbound(seq_of_landmarks, goldstandard_features, neighborhood, boundaries, loc, actions=None, num_actions=4, step_fn=step_agnostic):
+def prediction_upperbound(seq_of_landmarks, goldstandard_features, neighborhood, boundaries, loc, actions=None, step_fn=step_agnostic, action_space=[]):
     depth = len(seq_of_landmarks)
 
     if actions is not None:
         assert len(actions) == depth - 1
 
-    if num_actions == 4:
+    if len(action_space) == 4:
         paths = init_paths_agnostic(neighborhood, boundaries, goldstandard_features)
     else:
         paths = init_paths_aware(neighborhood, boundaries, goldstandard_features)
@@ -49,10 +50,10 @@ def prediction_upperbound(seq_of_landmarks, goldstandard_features, neighborhood,
     for d in range(depth-1):
         new_paths = list()
         for path in paths:
-            for act_index in range(num_actions):
-                if actions is None or actions[d] == act_index:
+            for act in action_space:
+                if actions is None or actions[d] == act:
                     path_new = copy.deepcopy(path)
-                    path_new['loc'] = step_fn(act_index, path['loc'], boundaries)
+                    path_new['loc'] = step_fn(act, path['loc'], boundaries)
                     path_new['seq_of_landmarks'].append(goldstandard_features.get(neighborhood, path_new['loc']))
                     new_paths.append(path_new)
         paths = new_paths
@@ -71,13 +72,12 @@ def prediction_upperbound(seq_of_landmarks, goldstandard_features, neighborhood,
     return acc
 
 
-def process(configs, feature_loaders, num_steps, step_fn, num_actions=4):
+def process(configs, feature_loaders, num_steps, step_fn=step_agnostic, action_space=['UP', 'LEFT', 'RIGHT', 'DOWN'], condition_on_action=False):
     correct, cnt = 0, 0
 
     all_possible_actions = [[]]
     if num_steps > 1:
-        actions = [i for i in range(num_actions)]
-        action_set = [actions] * (num_steps - 1)
+        action_set = [action_space] * (num_steps - 1)
         all_possible_actions = list(itertools.product(*action_set))
 
     for config in configs:
@@ -98,38 +98,48 @@ def process(configs, feature_loaders, num_steps, step_fn, num_actions=4):
                     sampled_act = a[p]
                     actions.append(sampled_act)
                     loc = step_fn(sampled_act, loc, boundaries)
-
+            act_seq = None
+            if condition_on_action:
+                act_seq = a
             correct += prediction_upperbound(obs['goldstandard'], feature_loaders['goldstandard'],
                                              neighborhood, boundaries, loc,
-                                             step_fn=step_fn, num_actions=num_actions)
+                                             step_fn=step_fn, actions=act_seq, action_space=action_space)
             cnt += 1
 
     return correct/cnt
 
 if __name__ == '__main__':
-    data_dir = os.environ.get('TALKTHEWALK_DATADIR', './data')
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--data-dir', type=str, default='./data')
+    parser.add_argument('--orientation-aware', action='store_true')
+    parser.add_argument('--max-T', type=int, default=3)
+    parser.add_argument('--condition-on-action',  action='store_true')
 
-    train_configs = json.load(open(os.path.join(data_dir, 'configurations.train.json')))
-    valid_configs = json.load(open(os.path.join(data_dir, 'configurations.valid.json')))
-    test_configs = json.load(open(os.path.join(data_dir, 'configurations.test.json')))
+    args = parser.parse_args()
+
+    train_configs = json.load(open(os.path.join(args.data_dir, 'configurations.train.json')))
+    valid_configs = json.load(open(os.path.join(args.data_dir, 'configurations.valid.json')))
+    test_configs = json.load(open(os.path.join(args.data_dir, 'configurations.test.json')))
 
     neighborhoods = ['fidi', 'hellskitchen', 'williamsburg', 'uppereast', 'eastvillage']
-    landmark_map = Map(neighborhoods, include_empty_corners=True)
+    landmark_map = Map(args.data_dir, neighborhoods, include_empty_corners=True)
 
-    orientation_aware = False
-    if orientation_aware:
+    if args.orientation_aware:
         step_fn = step_aware
-        num_actions = 3
+        action_space = ['ACTION:FORWARD', 'ACTION:TURNLEFT', 'ACTION:TURNRIGHT']
     else:
         step_fn = step_agnostic
-        num_actions = 4
+        action_space = ['UP', 'LEFT', 'RIGHT', 'DOWN']
 
     feature_loaders = dict()
-    feature_loaders['goldstandard'] = GoldstandardFeatures(landmark_map, orientation_aware=orientation_aware)
+    feature_loaders['goldstandard'] = GoldstandardFeatures(landmark_map, orientation_aware=args.orientation_aware)
 
-    for step in range(1, 5):
-        train_upp = process(train_configs, feature_loaders, step, step_fn, num_actions)
-        valid_upp = process(valid_configs, feature_loaders, step, step_fn, num_actions)
-        test_upp = process(test_configs, feature_loaders, step, step_fn, num_actions)
+    for T in range(0, args.max_T+1):
+        train_upp = process(train_configs, feature_loaders, T+1, step_fn=step_fn,
+                            action_space=action_space, condition_on_action=args.condition_on_action)
+        valid_upp = process(valid_configs, feature_loaders, T+1, step_fn=step_fn,
+                            action_space=action_space, condition_on_action=args.condition_on_action)
+        test_upp = process(test_configs, feature_loaders, T+1, step_fn=step_fn,
+                           action_space=action_space, condition_on_action=args.condition_on_action)
 
-        print("%.2f, %.2f, %.2f" % (train_upp*100, valid_upp*100, test_upp*100))
+        print("T=%i, %.2f, %.2f, %.2f" % (T, train_upp*100, valid_upp*100, test_upp*100))
