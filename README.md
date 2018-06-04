@@ -59,8 +59,8 @@ To train a guide (from scratch) to perform location prediction from generated to
 ```bash
 python ttw/train/predict_location_generated.py --tourist-model EXP_DIR/tourist_imitation/tourist.pt --decoding-strategy greedy --trajectories all --train-guide --T 0 --cuda
 ```
-where ```---trajectories``` is ```all``` if you want to train on random walk trajectories of length ```--T```. Use ```---trajectories``` is ```human``` to train
-on human trajectories from the Talk The Walk dataset.
+where ```--trajectories all``` indicates to train on random walk trajectories of length ```--T```. If ```--trajectories human```, then the model will be trained
+on human trajectories of the Talk The Walk dataset.
 
 To optimize the tourist generation (with RL) in conjunction with a pre-trained guide. First, pretrain the guide:
 ```bash
