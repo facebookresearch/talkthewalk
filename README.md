@@ -28,8 +28,9 @@ For all experiments, the data directory can be specified through ```--data-dir``
 ### Experiment directory
 Create a directory to store your experiments (logs and model checkpoints), for instance by the following command:
 ```bash
-mkdir exp```
-By default, experiments will be saved to ````./exp``` but you can change the experiment directory via the ```--exp-dir``` flag.
+mkdir exp
+```
+By default, experiments will be saved to ```./exp``` but you can change the experiment directory via the ```--exp-dir``` flag.
 The results of each experiment will be saved in this directory under the experiment name, specified via ```--exp-name```.
 
 #### Running emergent language experiments
