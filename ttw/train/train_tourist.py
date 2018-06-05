@@ -1,3 +1,10 @@
+# Copyright (c) Facebook, Inc. and its affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the license found in the
+# LICENSE file in the root directory of this source tree.
+#
+
 import argparse
 import os
 import random
@@ -110,9 +117,3 @@ if __name__ == '__main__':
         if valid_loss < best_val:
             best_val = valid_loss
             tourist.save(os.path.join(exp_dir, 'tourist.pt'))
-
-
-
-
-
-

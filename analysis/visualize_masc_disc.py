@@ -1,3 +1,10 @@
+# Copyright (c) Facebook, Inc. and its affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the license found in the
+# LICENSE file in the root directory of this source tree.
+#
+
 import argparse
 import numpy
 import torch
@@ -41,4 +48,3 @@ for i in range(len(examples)):
 
         plt.matshow(mask)
         plt.savefig('{}_{}.png'.format(i, j))
-

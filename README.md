@@ -85,3 +85,6 @@ python scripts/evaluate_location.py --tourist-model TOURIST_CHECKPOINT --guide-m
 #### Running landmark classification experiments
 TODO
 
+## License
+
+Talk the Walk is CC-BY-NC licensed, as found in the LICENSE file.

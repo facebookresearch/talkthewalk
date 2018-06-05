@@ -1,3 +1,10 @@
+# Copyright (c) Facebook, Inc. and its affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the license found in the
+# LICENSE file in the root directory of this source tree.
+#
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -117,4 +124,3 @@ class GRUEncoder(nn.Module):
         states = torch.cat([first_h, states], 1)
 
         return states[torch.arange(batch_size).long(), seq_lens, :]
-
