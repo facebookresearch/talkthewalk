@@ -1,6 +1,7 @@
 ## Talk The Walk: Navigating New York City Through Grounded Dialogue
 This repository provides code for reproducing experiments
-of the paper ```Talk The Walk: Navigating New York City Through Grounded Dialogue``` by Harm de Vries, Kurt Shuster, Dhruv Batra, Devi Parikh, Jason Weston, and Douwe Kiela.
+of the paper [Talk The Walk: Navigating New York City Through Grounded Dialogue](https://arxiv.org/abs/1807.03367)
+by Harm de Vries, Kurt Shuster, Dhruv Batra, Devi Parikh, Jason Weston, and Douwe Kiela.
 
 ## Getting started
 

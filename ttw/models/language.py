@@ -301,7 +301,7 @@ class GuideLanguage(nn.Module):
 
         tourist_obs_msg = []
         for i, (gate, emb) in enumerate(zip(self.obs_write_gate, obs_msgs)):
-            include = (i < sampled_Ts).float().unsqueeze(-1)
+            include = (i <= sampled_Ts).float().unsqueeze(-1)
             tourist_obs_msg.append(include*F.sigmoid(gate)*emb)
         tourist_obs_msg = sum(tourist_obs_msg)
 
@@ -333,7 +333,7 @@ class GuideLanguage(nn.Module):
 
         # add RL loss
         if add_rl_loss:
-            advantage = -(out['sl_loss'] - out['sl_loss'].mean())
+            advantage = -(out['sl_loss'] - out['sl_loss'].mean()).detach()
 
             log_prob = torch.log(torch.gather(T_dist, 1, sampled_Ts.unsqueeze(-1)) + 1e-8)
             out['rl_loss'] = log_prob*advantage
