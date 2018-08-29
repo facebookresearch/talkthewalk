@@ -28,6 +28,7 @@ def eval_epoch(loader, guide, opt=None):
         g_out = guide.forward(batch, add_rl_loss=True)
         accs += g_out['acc']
         total += 1
+
         l = (g_out['rl_loss'] + g_out['sl_loss']).sum()
         loss += l.item()
 
@@ -80,15 +81,14 @@ if __name__ == '__main__':
     logger = create_logger(os.path.join(exp_dir, 'log.txt'))
     logger.info(args)
 
-    train_data = TalkTheWalkLanguage(args.data_dir, 'train')
+    train_data = TalkTheWalkLanguage(args.data_dir, 'train', args.last_turns)
     train_loader = DataLoader(train_data, args.batch_sz, collate_fn=get_collate_fn(args.cuda), shuffle=True)
 
-    valid_data = TalkTheWalkLanguage(args.data_dir, 'valid')
+    valid_data = TalkTheWalkLanguage(args.data_dir, 'valid', args.last_turns)
     valid_loader = DataLoader(valid_data, args.batch_sz, collate_fn=get_collate_fn(args.cuda))
 
-    test_data = TalkTheWalkLanguage(args.data_dir, 'test')
+    test_data = TalkTheWalkLanguage(args.data_dir, 'test', args.last_turns)
     test_loader = DataLoader(test_data, args.batch_sz, collate_fn=get_collate_fn(args.cuda))
-
 
     guide = GuideLanguage(args.embed_sz, args.hidden_sz, len(train_data.dict), apply_masc=args.apply_masc, T=args.T)
 
