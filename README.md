@@ -113,7 +113,7 @@ python scripts/evaluate_location.py \
 #### Running landmark classification experiments
 If you want to run experiments using fasttext features, please install fastText via anaconda's pip of the ttw environment
 (follow instructions [here](https://github.com/facebookresearch/fastText/tree/master/python)). Next, download
-pretrained vectors [wiki.en.zip](https://s3-us-west-1.amazonaws.com/fasttext-vectors/wiki.en.zip), extract wiki.en.bin and put the file into the data directory.
+pretrained vectors [wiki.en.zip](https://dl.fbaipublicfiles.com/fasttext/vectors-wiki/wiki.en.vec), extract wiki.en.bin and put the file into the data directory.
 
 To run landmark classification with text recognition features, use the following command:
 ```bash
