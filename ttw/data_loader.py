@@ -10,6 +10,7 @@ import os
 import itertools
 import json
 import numpy
+import random
 
 from torch.utils.data.dataset import Dataset
 from sklearn.decomposition import PCA
@@ -59,7 +60,8 @@ class TalkTheWalkEmergent(Dataset):
         self.data['landmarks'] = list()
         self.data['target'] = list()
 
-        action_set = [['UP', 'DOWN', 'LEFT', 'RIGHT']] * self.T
+        action_list = ['UP', 'DOWN', 'LEFT', 'RIGHT']
+        action_set = [action_list] * self.T
         all_possible_actions = list(itertools.product(*action_set))
 
         for config in self.configs:
@@ -76,9 +78,10 @@ class TalkTheWalkEmergent(Dataset):
                         obs[k].append(feature_loader.get(neighborhood, loc))
 
                     if p != self.T:
-                        sampled_act = self.act_dict.encode(a[p])
-                        actions.append(sampled_act)
-                        loc = step_agnostic(a[p], loc, boundaries)
+                        sampled_act = random.choice(action_list)
+                        sampled_enc = self.act_dict.encode(sampled_act)
+                        actions.append(sampled_enc)
+                        loc = step_agnostic(sampled_act, loc, boundaries)
 
                 if self.T == 0:
                     actions.append(0)
@@ -304,7 +307,7 @@ class GoldstandardFeatures:
             if loc[2] in self.allowed_orientations[orientation]:
                 return self.map.get(neighborhood, loc[0], loc[1])
             else:
-                return [self.map.encode('Empty')]
+                return [self.map.landmark_dict.encode('Empty')]
         else:
             return self.map.get(neighborhood, loc[0], loc[1])
 

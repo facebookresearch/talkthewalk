@@ -149,10 +149,10 @@ class ActionAgnosticDictionary:
                 0: 'STAYED'
             },
             1: {
-                0: 'LEFT',
+                0: 'RIGHT',
             },
             -1: {
-                0: 'RIGHT'
+                0: 'LEFT'
             }
         }
 
